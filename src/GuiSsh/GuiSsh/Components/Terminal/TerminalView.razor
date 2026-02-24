@@ -1,0 +1,126 @@
+@* Inherits InteractiveServer from AppShell — requires server-side for ShellStream access *@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject GuiSsh.Services.SshSessionManager SessionManager
+
+<div id="@_terminalElementId" style="width: 100%; height: 100%;"></div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+
+    private readonly string _terminalElementId = $"terminal-{Guid.NewGuid():N}";
+    private IJSObjectReference? _jsModule;
+    private IJSObjectReference? _terminal;
+    private DotNetObjectReference<TerminalView>? _dotNetRef;
+    private Renci.SshNet.ShellStream? _shellStream;
+    private CancellationTokenSource? _readCts;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _dotNetRef = DotNetObjectReference.Create(this);
+
+        // Load xterm.js terminal interop module
+        _jsModule = await JS.InvokeAsync<IJSObjectReference>(
+            "import", "/js/terminal-interop.js");
+
+        _terminal = await _jsModule.InvokeAsync<IJSObjectReference>(
+            "createTerminal", _terminalElementId, _dotNetRef);
+
+        // Get the ShellStream from the session manager
+        _shellStream = SessionManager.GetShellStream(SessionId);
+        if (_shellStream == null)
+        {
+            await _jsModule.InvokeVoidAsync("writeToTerminal", _terminal, "\r\n*** No SSH session found. Connect first. ***\r\n");
+            return;
+        }
+
+        // Start reading from ShellStream in background
+        _readCts = new CancellationTokenSource();
+        _ = ReadShellStreamAsync(_readCts.Token);
+    }
+
+    [JSInvokable]
+    public void OnTerminalInput(string data)
+    {
+        if (_shellStream == null) return;
+
+        try
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(data);
+            _shellStream.Write(bytes, 0, bytes.Length);
+            _shellStream.Flush();
+        }
+        catch (Exception ex)
+        {
+            _ = WriteToTerminalAsync($"\r\n*** Error writing to SSH: {ex.Message} ***\r\n");
+        }
+    }
+
+    [JSInvokable]
+    public void OnTerminalResize(int cols, int rows)
+    {
+        // TODO: Send terminal resize to SSH channel
+    }
+
+    private async Task ReadShellStreamAsync(CancellationToken ct)
+    {
+        var buffer = new byte[4096];
+
+        try
+        {
+            while (!ct.IsCancellationRequested && _shellStream != null)
+            {
+                var bytesRead = await _shellStream.ReadAsync(buffer, 0, buffer.Length, ct);
+                if (bytesRead > 0)
+                {
+                    var text = System.Text.Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    await WriteToTerminalAsync(text);
+                }
+                else
+                {
+                    // Small delay to avoid tight loop when no data
+                    await Task.Delay(10, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            await WriteToTerminalAsync($"\r\n*** SSH connection lost: {ex.Message} ***\r\n");
+        }
+    }
+
+    private async Task WriteToTerminalAsync(string data)
+    {
+        if (_jsModule != null && _terminal != null)
+        {
+            try
+            {
+                await _jsModule.InvokeVoidAsync("writeToTerminal", _terminal, data);
+            }
+            catch { /* Circuit may have disconnected */ }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_readCts != null)
+        {
+            await _readCts.CancelAsync();
+            _readCts.Dispose();
+        }
+
+        if (_terminal != null)
+        {
+            try { await _terminal.InvokeVoidAsync("dispose"); } catch { }
+            await _terminal.DisposeAsync();
+        }
+
+        if (_jsModule != null)
+            await _jsModule.DisposeAsync();
+
+        _dotNetRef?.Dispose();
+    }
+}

@@ -1,0 +1,279 @@
+@inject ISshService SshService
+@inject ShellCommandBuilder CommandBuilder
+@inject ShellOutputParser OutputParser
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+@* Breadcrumb Navigation *@
+<div style="padding: 8px 12px; background: #181825; border-bottom: 1px solid #313244;
+            display: flex; align-items: center; gap: 4px;">
+    <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                   OnClick="NavigateUp" Disabled="@(_currentPath == "/")"
+                   Color="Color.Default" />
+    <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small"
+                   OnClick="RefreshDirectory" Color="Color.Default" />
+
+    @* Breadcrumb path *@
+    <MudBreadcrumbs Items="@_breadcrumbs" Class="pa-0 ml-2"
+                    Style="font-size: 0.85rem;">
+        <ItemTemplate Context="item">
+            <MudButton Size="Size.Small" Color="Color.Primary" Variant="Variant.Text"
+                       OnClick="@(() => NavigateTo(item.Href ?? "/"))"
+                       Style="text-transform: none; min-width: auto; padding: 2px 6px;">
+                @item.Text
+            </MudButton>
+        </ItemTemplate>
+    </MudBreadcrumbs>
+
+    <MudSpacer />
+
+    @* Toolbar *@
+    <MudIconButton Icon="@Icons.Material.Filled.NoteAdd" Size="Size.Small"
+                   Color="Color.Default" OnClick="CreateNewFile" />
+    <MudIconButton Icon="@Icons.Material.Filled.CreateNewFolder" Size="Size.Small"
+                   Color="Color.Default" OnClick="CreateNewFolder" />
+    <MudToggleIconButton @bind-Toggled="_showHidden"
+                         Icon="@Icons.Material.Filled.VisibilityOff"
+                         ToggledIcon="@Icons.Material.Filled.Visibility"
+                         Size="Size.Small" Color="Color.Default" />
+</div>
+
+@* File List *@
+<div style="padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; overflow-y: auto; height: calc(100% - 48px);">
+    @if (_loading)
+    {
+        <MudProgressCircular Indeterminate="true" Size="Size.Medium" Class="mx-auto my-8" />
+    }
+    else
+    {
+        @foreach (var entry in GetVisibleEntries())
+        {
+            <div class="file-entry" @ondblclick="() => OnDoubleClick(entry)"
+                 @oncontextmenu="(e) => OnRightClick(e, entry)"
+                 @oncontextmenu:preventDefault="true"
+                 style="width: 90px; padding: 8px; text-align: center; border-radius: 6px;
+                        cursor: pointer; user-select: none;"
+                 @onclick="() => SelectEntry(entry)">
+                <MudIcon Icon="@GetFileIcon(entry)" Size="Size.Large"
+                         Color="@GetFileColor(entry)" />
+                <MudText Typo="Typo.caption" Style="word-break: break-all; color: #cdd6f4;
+                         display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                         overflow: hidden; margin-top: 4px;">
+                    @entry.Name
+                </MudText>
+            </div>
+        }
+    }
+</div>
+
+@* Context Menu *@
+<MudMenu @ref="_contextMenu" ActivationEvent="@MouseEvent.RightClick"
+         Dense="true" PositionAtCursor="true">
+    <ChildContent>
+        <div></div>
+    </ChildContent>
+</MudMenu>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+    [Parameter] public string WindowId { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> OnOpenFile { get; set; }
+    [Parameter] public EventCallback<string> OnPathChanged { get; set; }
+
+    private string _currentPath = "~";
+    private List<FileEntry> _entries = new();
+    private FileEntry? _selectedEntry;
+    private bool _loading = true;
+    private bool _showHidden = false;
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private MudMenu? _contextMenu;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ResolvePath();
+        await LoadDirectory();
+    }
+
+    private async Task ResolvePath()
+    {
+        if (_currentPath == "~")
+        {
+            var result = await SshService.ExecuteAsync(SessionId, CommandBuilder.GetHomeDirectory());
+            if (result.Success)
+                _currentPath = result.StdOut.Trim();
+            else
+                _currentPath = "/";
+        }
+    }
+
+    private async Task LoadDirectory()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            var cmd = CommandBuilder.ListDirectory(_currentPath);
+            var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+            if (result.Success)
+            {
+                _entries = OutputParser.ParseLsOutput(result.StdOut, _currentPath);
+            }
+            else
+            {
+                Snackbar.Add($"Error listing directory: {result.StdErr}", Severity.Error);
+                _entries = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+
+        UpdateBreadcrumbs();
+        _loading = false;
+        StateHasChanged();
+
+        // Notify parent of current path for taskbar display
+        await OnPathChanged.InvokeAsync(_currentPath);
+    }
+
+    private IEnumerable<FileEntry> GetVisibleEntries()
+    {
+        var filtered = _showHidden ? _entries : _entries.Where(e => !e.IsHidden);
+        return filtered.OrderByDescending(e => e.IsDirectory).ThenBy(e => e.Name);
+    }
+
+    private void UpdateBreadcrumbs()
+    {
+        _breadcrumbs = new List<BreadcrumbItem> { new("/", href: "/") };
+        var parts = _currentPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var accumulated = "";
+        foreach (var part in parts)
+        {
+            accumulated += "/" + part;
+            _breadcrumbs.Add(new BreadcrumbItem(part, href: accumulated));
+        }
+    }
+
+    private async Task OnDoubleClick(FileEntry entry)
+    {
+        if (entry.IsDirectory)
+        {
+            _currentPath = entry.FullPath;
+            await LoadDirectory();
+        }
+        else
+        {
+            await OnOpenFile.InvokeAsync(entry.FullPath);
+        }
+    }
+
+    private void OnRightClick(MouseEventArgs e, FileEntry entry)
+    {
+        _selectedEntry = entry;
+        // Context menu functionality will be enhanced in future iteration
+    }
+
+    private void SelectEntry(FileEntry entry)
+    {
+        _selectedEntry = entry;
+    }
+
+    private async Task NavigateTo(string path)
+    {
+        _currentPath = path;
+        await LoadDirectory();
+    }
+
+    private async Task NavigateUp()
+    {
+        var lastSlash = _currentPath.LastIndexOf('/');
+        if (lastSlash > 0)
+            _currentPath = _currentPath[..lastSlash];
+        else
+            _currentPath = "/";
+
+        await LoadDirectory();
+    }
+
+    private async Task RefreshDirectory() => await LoadDirectory();
+
+    private async Task CreateNewFile()
+    {
+        var name = await PromptForName("New File", "Enter file name:");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        var path = _currentPath.TrimEnd('/') + "/" + name;
+        var result = await SshService.ExecuteAsync(SessionId, CommandBuilder.CreateFile(path));
+        if (result.Success)
+        {
+            Snackbar.Add($"Created {name}", Severity.Success);
+            await LoadDirectory();
+        }
+        else
+        {
+            Snackbar.Add($"Error: {result.StdErr}", Severity.Error);
+        }
+    }
+
+    private async Task CreateNewFolder()
+    {
+        var name = await PromptForName("New Folder", "Enter folder name:");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        var path = _currentPath.TrimEnd('/') + "/" + name;
+        var result = await SshService.ExecuteAsync(SessionId, CommandBuilder.CreateDirectory(path));
+        if (result.Success)
+        {
+            Snackbar.Add($"Created {name}/", Severity.Success);
+            await LoadDirectory();
+        }
+        else
+        {
+            Snackbar.Add($"Error: {result.StdErr}", Severity.Error);
+        }
+    }
+
+    private async Task<string?> PromptForName(string title, string message)
+    {
+        var parameters = new DialogParameters<InputDialog>
+        {
+            { x => x.Message, message },
+            { x => x.Label, "Name" }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<InputDialog>(title, parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled && result.Data is string name)
+            return name;
+
+        return null;
+    }
+
+    private string GetFileIcon(FileEntry entry) => entry.Type switch
+    {
+        FileEntryType.Directory => Icons.Material.Filled.Folder,
+        FileEntryType.Symlink => Icons.Material.Filled.Link,
+        _ => entry.Extension switch
+        {
+            "txt" or "md" or "log" => Icons.Material.Filled.Description,
+            "json" or "xml" or "yaml" or "yml" or "toml" => Icons.Material.Filled.DataObject,
+            "cs" or "js" or "ts" or "py" or "rs" or "go" or "java" => Icons.Material.Filled.Code,
+            "sh" or "bash" or "zsh" => Icons.Material.Filled.Terminal,
+            "png" or "jpg" or "jpeg" or "gif" or "svg" or "webp" => Icons.Material.Filled.Image,
+            "zip" or "tar" or "gz" or "bz2" or "xz" => Icons.Material.Filled.FolderZip,
+            "pdf" => Icons.Material.Filled.PictureAsPdf,
+            _ => Icons.Material.Filled.InsertDriveFile
+        }
+    };
+
+    private Color GetFileColor(FileEntry entry) => entry.Type switch
+    {
+        FileEntryType.Directory => Color.Warning,
+        FileEntryType.Symlink => Color.Info,
+        _ => Color.Default
+    };
+}

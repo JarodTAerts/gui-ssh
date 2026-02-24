@@ -1,0 +1,68 @@
+@rendermode InteractiveServer
+
+<MudThemeProvider IsDarkMode="true" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+    <MudAppBar Elevation="1" Dense="true">
+        <MudIconButton Icon="@Icons.Material.Filled.Menu" Color="Color.Inherit"
+                       Edge="Edge.Start" OnClick="ToggleDrawer" />
+        <MudText Typo="Typo.h6" Class="ml-2">GUI-SSH</MudText>
+        <MudSpacer />
+        @if (!string.IsNullOrEmpty(_activeSessionId))
+        {
+            <MudChip T="string" Color="Color.Success" Size="Size.Small">Connected</MudChip>
+        }
+    </MudAppBar>
+
+    <MudDrawer @bind-Open="_drawerOpen" Elevation="2" Variant="DrawerVariant.Mini"
+               ClipMode="DrawerClipMode.Always" OpenMiniOnHover="true">
+        <MudDrawerHeader>
+            <MudText Typo="Typo.subtitle1">Connections</MudText>
+        </MudDrawerHeader>
+        <Sidebar ActiveSessionId="@_activeSessionId"
+                 OnConnected="HandleConnected"
+                 OnSessionSelected="HandleSessionSelected" />
+    </MudDrawer>
+
+    <MudMainContent Class="pa-0" Style="overflow: hidden;">
+        @if (string.IsNullOrEmpty(_activeSessionId))
+        {
+            <div class="d-flex align-center justify-center" style="height: 100%;">
+                <MudStack AlignItems="AlignItems.Center" Spacing="4">
+                    <MudIcon Icon="@Icons.Material.Filled.Terminal" Size="Size.Large"
+                             Color="Color.Primary" Style="font-size: 4rem;" />
+                    <MudText Typo="Typo.h4">GUI-SSH</MudText>
+                    <MudText Typo="Typo.body1" Color="Color.Secondary">
+                        Select or add a connection from the sidebar to get started.
+                    </MudText>
+                </MudStack>
+            </div>
+        }
+        else
+        {
+            <GuiSsh.Components.Layout.SessionTabs SessionId="@_activeSessionId" />
+        }
+    </MudMainContent>
+</MudLayout>
+
+@code {
+    private bool _drawerOpen = true;
+    private string? _activeSessionId;
+
+    private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
+
+    private void HandleConnected(string sessionId)
+    {
+        _activeSessionId = sessionId;
+        StateHasChanged();
+    }
+
+    private void HandleSessionSelected(string sessionId)
+    {
+        _activeSessionId = sessionId;
+        StateHasChanged();
+    }
+}

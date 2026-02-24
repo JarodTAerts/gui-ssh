@@ -1,0 +1,35 @@
+@* Session tabs — simple custom tab bar that reliably renders above terminal/desktop *@
+
+<div class="session-tabs-container">
+    <div class="session-tabs-bar">
+        <button class="session-tab @(_activeTab == "terminal" ? "active" : "")"
+                @onclick='() => _activeTab = "terminal"'>
+            <MudIcon Icon="@Icons.Material.Filled.Terminal" Size="Size.Small" />
+            <span>Terminal</span>
+        </button>
+        <button class="session-tab @(_activeTab == "desktop" ? "active" : "")"
+                @onclick='() => _activeTab = "desktop"'>
+            <MudIcon Icon="@Icons.Material.Filled.DesktopWindows" Size="Size.Small" />
+            <span>Desktop</span>
+        </button>
+    </div>
+
+    <div class="session-tabs-content">
+        @if (_activeTab == "terminal")
+        {
+            <div style="height: 100%; background: #1e1e2e; padding: 4px;">
+                <GuiSsh.Components.Terminal.TerminalView SessionId="@SessionId" />
+            </div>
+        }
+        else
+        {
+            <GuiSsh.Client.Components.Desktop.DesktopView SessionId="@SessionId" />
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+
+    private string _activeTab = "terminal";
+}

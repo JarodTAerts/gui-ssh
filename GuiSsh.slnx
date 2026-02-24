@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/GuiSsh/">
+    <Project Path="src/GuiSsh/GuiSsh.Client/GuiSsh.Client.csproj" />
+    <Project Path="src/GuiSsh/GuiSsh/GuiSsh.csproj" />
+  </Folder>
+</Solution>

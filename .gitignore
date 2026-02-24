@@ -1,0 +1,15 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.vs/
+.vscode/
+
+## Build artifacts
+publish/
+out/
+
+## OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,114 @@
+@inject ISshService SshService
+@inject ShellCommandBuilder CommandBuilder
+@inject ISnackbar Snackbar
+
+<div style="display: flex; flex-direction: column; height: 100%;">
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+    }
+
+    <textarea value="@_content"
+              style="flex: 1; background: #1e1e2e; color: #cdd6f4; border: none;
+                     padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace;
+                     font-size: 14px; resize: none; outline: none; tab-size: 4;"
+              disabled="@_loading"
+              @oninput="OnContentChanged">
+    </textarea>
+
+    <div style="display: flex; align-items: center; padding: 6px 12px;
+                background: #181825; border-top: 1px solid #313244; gap: 8px;">
+        <MudText Typo="Typo.caption" Color="Color.Secondary">@_fileName</MudText>
+        @if (_isDirty)
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">Modified</MudChip>
+        }
+        <MudSpacer />
+        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="SaveFile" Disabled="@(!_isDirty || _saving)">
+            Save
+        </MudButton>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+    [Parameter] public string FilePath { get; set; } = string.Empty;
+
+    private string _content = string.Empty;
+    private string _originalContent = string.Empty;
+    private string _fileName = string.Empty;
+    private bool _loading = true;
+    private bool _saving = false;
+    private bool _isDirty = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _fileName = FilePath.Split('/').LastOrDefault() ?? FilePath;
+        await LoadFile();
+    }
+
+    private async Task LoadFile()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            var cmd = CommandBuilder.ReadFile(FilePath);
+            var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+            if (result.Success)
+            {
+                _content = result.StdOut;
+                _originalContent = _content;
+            }
+            else
+            {
+                Snackbar.Add($"Error reading file: {result.StdErr}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+
+        _loading = false;
+    }
+
+    private void OnContentChanged(ChangeEventArgs e)
+    {
+        _content = e.Value?.ToString() ?? string.Empty;
+        _isDirty = _content != _originalContent;
+    }
+
+    private async Task SaveFile()
+    {
+        _saving = true;
+        StateHasChanged();
+
+        try
+        {
+            var cmd = CommandBuilder.WriteFile(FilePath, _content);
+            var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+            if (result.Success)
+            {
+                _originalContent = _content;
+                _isDirty = false;
+                Snackbar.Add($"Saved {_fileName}", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"Error saving: {result.StdErr}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+
+        _saving = false;
+    }
+}

@@ -1,0 +1,56 @@
+<div style="position: absolute; bottom: 0; left: 0; right: 0;
+            height: 40px; background: #11111b; border-top: 1px solid #313244;
+            display: flex; align-items: center; padding: 0 8px; gap: 4px; z-index: 9999;">
+
+    @foreach (var window in Windows)
+    {
+        var isActive = !window.IsMinimized;
+        var displayTitle = GetDisplayTitle(window);
+        <MudButton Size="Size.Small"
+                   Variant="@(isActive ? Variant.Filled : Variant.Outlined)"
+                   Color="@(isActive ? Color.Primary : Color.Default)"
+                   OnClick="@(() => OnWindowClick.InvokeAsync(window))"
+                   Style="text-transform: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis;">
+            <MudIcon Icon="@GetIcon(window.Type)" Size="Size.Small" Class="mr-1" />
+            @displayTitle
+        </MudButton>
+    }
+
+    <MudSpacer />
+
+    <MudIconButton Icon="@Icons.Material.Filled.CreateNewFolder" Size="Size.Small"
+                   Color="Color.Primary" OnClick="OnNewFileManager" />
+</div>
+
+@code {
+    [Parameter] public List<DesktopWindowState> Windows { get; set; } = new();
+    [Parameter] public EventCallback<DesktopWindowState> OnWindowClick { get; set; }
+    [Parameter] public EventCallback OnNewFileManager { get; set; }
+
+    private string GetDisplayTitle(DesktopWindowState window)
+    {
+        if (window.Type == WindowType.FileManager)
+        {
+            var path = window.Data.GetValueOrDefault("CurrentPath")?.ToString();
+            if (!string.IsNullOrEmpty(path))
+            {
+                // Show last folder name or full short path
+                if (path.Length > 25)
+                {
+                    var lastSlash = path.LastIndexOf('/');
+                    return lastSlash > 0 ? "..." + path[lastSlash..] : path[..25] + "...";
+                }
+                return path;
+            }
+        }
+        return window.Title;
+    }
+
+    private string GetIcon(WindowType type) => type switch
+    {
+        WindowType.FileManager => Icons.Material.Filled.Folder,
+        WindowType.Editor => Icons.Material.Filled.EditNote,
+        WindowType.ImageViewer => Icons.Material.Filled.Image,
+        _ => Icons.Material.Filled.Window
+    };
+}

@@ -1,0 +1,113 @@
+@inject ISshService SshService
+@inject ShellCommandBuilder CommandBuilder
+@inject ShellOutputParser OutputParser
+@inject ISnackbar Snackbar
+
+<div class="desktop-surface" style="position: relative; height: 100%; background: #181825; overflow: hidden;">
+    @foreach (var window in _windows.Where(w => !w.IsMinimized))
+    {
+        <DesktopWindow State="@window"
+                       OnClose="() => CloseWindow(window)"
+                       OnMinimize="() => MinimizeWindow(window)"
+                       OnFocus="() => FocusWindow(window)">
+            @if (window.Type == WindowType.FileManager)
+            {
+                <FileManager SessionId="@SessionId"
+                             WindowId="@window.Id"
+                             OnOpenFile="(path) => OpenFileEditor(path)"
+                             OnPathChanged="(path) => OnFileManagerPathChanged(window, path)" />
+            }
+            else if (window.Type == WindowType.Editor)
+            {
+                <EditorWindow SessionId="@SessionId"
+                              FilePath="@(window.Data.GetValueOrDefault("FilePath")?.ToString() ?? "")" />
+            }
+        </DesktopWindow>
+    }
+
+    <Taskbar Windows="@_windows"
+             OnWindowClick="ToggleWindow"
+             OnNewFileManager="OpenFileManager" />
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+
+    private List<DesktopWindowState> _windows = new();
+    private int _nextZIndex = 1;
+
+    protected override void OnInitialized()
+    {
+        // Open a file manager by default
+        OpenFileManager();
+    }
+
+    private void OpenFileManager()
+    {
+        var window = new DesktopWindowState
+        {
+            Title = "File Manager",
+            Type = WindowType.FileManager,
+            X = 30 + _windows.Count * 25,
+            Y = 30 + _windows.Count * 25,
+            Width = 750,
+            Height = 500,
+            ZIndex = _nextZIndex++
+        };
+        _windows.Add(window);
+    }
+
+    private void OpenFileEditor(string filePath)
+    {
+        var fileName = filePath.Split('/').LastOrDefault() ?? filePath;
+        var window = new DesktopWindowState
+        {
+            Title = $"Editor: {fileName}",
+            Type = WindowType.Editor,
+            X = 80 + _windows.Count * 25,
+            Y = 80 + _windows.Count * 25,
+            Width = 650,
+            Height = 450,
+            ZIndex = _nextZIndex++,
+            Data = new() { ["FilePath"] = filePath }
+        };
+        _windows.Add(window);
+    }
+
+    private void CloseWindow(DesktopWindowState window)
+    {
+        _windows.Remove(window);
+    }
+
+    private void MinimizeWindow(DesktopWindowState window)
+    {
+        window.IsMinimized = !window.IsMinimized;
+    }
+
+    private void FocusWindow(DesktopWindowState window)
+    {
+        window.ZIndex = _nextZIndex++;
+    }
+
+    private void ToggleWindow(DesktopWindowState window)
+    {
+        if (window.IsMinimized)
+        {
+            window.IsMinimized = false;
+            FocusWindow(window);
+        }
+        else
+        {
+            window.IsMinimized = true;
+        }
+    }
+
+    private void OnFileManagerPathChanged(DesktopWindowState window, string path)
+    {
+        window.Data["CurrentPath"] = path;
+        // Update title to show the directory name
+        var dirName = path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "/";
+        window.Title = dirName;
+        StateHasChanged();
+    }
+}

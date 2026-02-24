@@ -1,0 +1,111 @@
+@* Draggable/resizable desktop window *@
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div @ref="_windowRef" class="desktop-window" tabindex="0"
+     style="position: absolute;
+            left: @(State.X)px; top: @(State.Y)px;
+            width: @(State.Width)px; height: @(State.Height)px;
+            z-index: @State.ZIndex;
+            display: flex; flex-direction: column;
+            background: #1e1e2e; border: 1px solid #45475a;
+            border-radius: 8px; overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);"
+     @onclick="OnFocus"
+     @onclick:stopPropagation="true">
+
+    @* Title Bar — drag handle *@
+    <div class="window-titlebar"
+         @onpointerdown="OnTitleBarPointerDown"
+         style="display: flex; align-items: center; padding: 6px 10px;
+                background: #313244; cursor: move; user-select: none;
+                border-bottom: 1px solid #45475a; flex-shrink: 0; touch-action: none;">
+        <MudIcon Icon="@GetWindowIcon()" Size="Size.Small" Color="Color.Primary" Class="mr-2" />
+        <MudText Typo="Typo.body2" Style="flex: 1; color: #cdd6f4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            @State.Title
+        </MudText>
+        <MudIconButton Icon="@Icons.Material.Filled.Minimize" Size="Size.Small"
+                       Color="Color.Default" OnClick="OnMinimize"
+                       Style="pointer-events: auto;" />
+        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                       Color="Color.Error" OnClick="OnClose"
+                       Style="pointer-events: auto;" />
+    </div>
+
+    @* Window Content *@
+    <div style="flex: 1; overflow: auto; position: relative;">
+        @ChildContent
+    </div>
+</div>
+
+@code {
+    [Parameter] public DesktopWindowState State { get; set; } = new();
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnMinimize { get; set; }
+    [Parameter] public EventCallback OnFocus { get; set; }
+
+    private ElementReference _windowRef;
+    private IJSObjectReference? _dragModule;
+    private double _dragStartX;
+    private double _dragStartY;
+    private double _windowStartX;
+    private double _windowStartY;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _dragModule = await JS.InvokeAsync<IJSObjectReference>("import", "/js/drag-interop.js");
+        }
+    }
+
+    private async Task OnTitleBarPointerDown(PointerEventArgs e)
+    {
+        // Only drag on left mouse button and not on icon buttons
+        if (e.Button != 0) return;
+
+        _dragStartX = e.ClientX;
+        _dragStartY = e.ClientY;
+        _windowStartX = State.X;
+        _windowStartY = State.Y;
+
+        await OnFocus.InvokeAsync();
+
+        if (_dragModule != null)
+        {
+            var dotNetRef = DotNetObjectReference.Create(this);
+            await _dragModule.InvokeVoidAsync("startDrag", dotNetRef, _dragStartX, _dragStartY, _windowStartX, _windowStartY);
+        }
+    }
+
+    [JSInvokable]
+    public void OnDragMove(double newX, double newY)
+    {
+        State.X = newX;
+        State.Y = newY;
+        InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public void OnDragEnd()
+    {
+        // Drag completed — JS cleaned up listeners
+    }
+
+    private string GetWindowIcon() => State.Type switch
+    {
+        WindowType.FileManager => Icons.Material.Filled.Folder,
+        WindowType.Editor => Icons.Material.Filled.EditNote,
+        WindowType.ImageViewer => Icons.Material.Filled.Image,
+        _ => Icons.Material.Filled.Window
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_dragModule != null)
+        {
+            await _dragModule.DisposeAsync();
+        }
+    }
+}

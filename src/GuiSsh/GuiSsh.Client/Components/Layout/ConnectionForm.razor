@@ -1,0 +1,103 @@
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form">
+            <MudTextField @bind-Value="Connection.Name" Label="Connection Name"
+                          Required="true" RequiredError="Name is required"
+                          Variant="Variant.Outlined" Class="mb-3" />
+
+            <MudTextField @bind-Value="Connection.Host" Label="Host"
+                          Required="true" RequiredError="Host is required"
+                          Placeholder="hostname or IP"
+                          Variant="Variant.Outlined" Class="mb-3" />
+
+            <MudNumericField @bind-Value="Connection.Port" Label="Port"
+                             Min="1" Max="65535"
+                             Variant="Variant.Outlined" Class="mb-3" />
+
+            <MudTextField @bind-Value="Connection.Username" Label="Username"
+                          Required="true" RequiredError="Username is required"
+                          Variant="Variant.Outlined" Class="mb-3" />
+
+            <MudTextField @bind-Value="_password" Label="Password"
+                          InputType="InputType.Password"
+                          Required="true" RequiredError="Password is required"
+                          Variant="Variant.Outlined" Class="mb-3" />
+
+            <MudTextField @bind-Value="Connection.DefaultPath" Label="Default Path"
+                          Placeholder="~ (home directory)"
+                          Variant="Variant.Outlined" Class="mb-3" />
+
+            <MudCheckBox @bind-Value="_saveCredentials" Label="Save credentials (encrypted)"
+                         Color="Color.Primary" />
+
+            @if (IsNew)
+            {
+                <MudCheckBox @bind-Value="_connectNow" Label="Connect after saving"
+                             Color="Color.Primary" />
+            }
+        </MudForm>
+    </DialogContent>
+    <DialogActions>
+        @if (!IsNew)
+        {
+            <MudButton Color="Color.Error" Variant="Variant.Text" OnClick="Delete"
+                       Class="mr-auto">Delete</MudButton>
+        }
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   OnClick="Submit">
+            @(IsNew ? "Save" : "Save Changes")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public SavedConnection Connection { get; set; } = new();
+    [Parameter] public bool IsNew { get; set; }
+    [Parameter] public string ExistingPassword { get; set; } = string.Empty;
+
+    private MudForm _form = null!;
+    private string _password = string.Empty;
+    private bool _connectNow = true;
+    private bool _saveCredentials = true;
+
+    protected override void OnParametersSet()
+    {
+        _password = ExistingPassword;
+        // Default to saving credentials unless the user explicitly unchecks
+        _saveCredentials = true;
+    }
+
+    private async Task Submit()
+    {
+        await _form.Validate();
+        if (!_form.IsValid)
+            return;
+
+        var result = new ConnectionFormResult
+        {
+            Connection = Connection,
+            Password = _password,
+            ConnectNow = IsNew ? _connectNow : false,
+            SaveCredentials = _saveCredentials
+        };
+
+        MudDialog.Close(DialogResult.Ok(result));
+    }
+
+    private void Delete()
+    {
+        MudDialog.Close(DialogResult.Ok(new ConnectionFormResult
+        {
+            Connection = Connection,
+            Password = string.Empty,
+            ConnectNow = false,
+            SaveCredentials = false
+        }));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

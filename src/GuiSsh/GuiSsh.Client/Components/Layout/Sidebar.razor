@@ -1,0 +1,267 @@
+@using GuiSsh.Client.Models
+@inject ConnectionStore Store
+@inject CryptoService Crypto
+@inject ISshService SshService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudNavMenu>
+    @foreach (var conn in _connections)
+    {
+        var connCopy = conn;
+        var isConnected = IsConnected(conn.Id);
+        var isConnecting = _connectingId == conn.Id;
+
+        <div style="display: flex; align-items: center; padding: 2px 0;">
+            <MudNavLink OnClick="@(() => SelectConnection(connCopy))"
+                        Disabled="@isConnecting"
+                        Style="flex: 1; min-width: 0;"
+                        Icon="@(isConnecting ? Icons.Material.Filled.Sync : isConnected ? Icons.Material.Filled.Cloud : Icons.Material.Outlined.Cloud)"
+                        IconColor="@(isConnected ? Color.Success : Color.Default)">
+                @if (isConnecting)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true"
+                                         Style="width: 16px; height: 16px; margin-right: 6px;" />
+                }
+                <span style="display: flex; flex-direction: column; overflow: hidden;">
+                    <MudText Typo="Typo.body2" Style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">@conn.Name</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">@conn.Host</MudText>
+                </span>
+            </MudNavLink>
+            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                           Color="Color.Default"
+                           OnClick="@(() => OpenEditDialog(connCopy))" />
+        </div>
+    }
+</MudNavMenu>
+
+<MudDivider Class="my-2" />
+
+<MudButton FullWidth="true" StartIcon="@Icons.Material.Filled.Add"
+           Color="Color.Primary" Variant="Variant.Text"
+           OnClick="OpenAddDialog">
+    Add Connection
+</MudButton>
+
+@code {
+    [Parameter] public string? ActiveSessionId { get; set; }
+    [Parameter] public EventCallback<string> OnConnected { get; set; }
+    [Parameter] public EventCallback<string> OnSessionSelected { get; set; }
+
+    private List<SavedConnection> _connections = new();
+    private Dictionary<string, string> _activeConnSessionMap = new();
+    private string? _connectingId;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _connections = await Store.GetAllAsync();
+            StateHasChanged();
+        }
+    }
+
+    private bool IsConnected(string connectionId)
+        => _activeConnSessionMap.ContainsKey(connectionId);
+
+    private async Task SelectConnection(SavedConnection conn)
+    {
+        // Already connected — just switch
+        if (_activeConnSessionMap.TryGetValue(conn.Id, out var sessionId))
+        {
+            await OnSessionSelected.InvokeAsync(sessionId);
+            return;
+        }
+
+        // Try to auto-connect with stored credentials
+        if (conn.HasStoredCredentials)
+        {
+            var encryptedData = await Store.GetCredentialAsync(conn.Id);
+            if (!string.IsNullOrEmpty(encryptedData))
+            {
+                var creds = await Crypto.DecryptCredentialAsync(conn.Id, encryptedData);
+                if (creds.HasValue)
+                {
+                    await ConnectToServer(conn, creds.Value.Password);
+                    return;
+                }
+                else
+                {
+                    Snackbar.Add("Stored credentials could not be decrypted. Please re-enter.", Severity.Warning);
+                }
+            }
+        }
+
+        // No stored credentials — prompt for password
+        await PromptAndConnect(conn);
+    }
+
+    private async Task PromptAndConnect(SavedConnection conn)
+    {
+        var parameters = new DialogParameters<ConnectionForm>
+        {
+            { x => x.Connection, CloneConnection(conn) },
+            { x => x.IsNew, false }
+        };
+
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<ConnectionForm>("Connect", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled && result.Data is ConnectionFormResult formResult)
+        {
+            // Save credentials if requested
+            await SaveConnectionAndCredentials(formResult);
+            await ConnectToServer(conn, formResult.Password);
+        }
+    }
+
+    private async Task ConnectToServer(SavedConnection conn, string password)
+    {
+        _connectingId = conn.Id;
+        StateHasChanged();
+
+        try
+        {
+            var sessionId = await SshService.ConnectAsync(conn.Host, conn.Port, conn.Username, password);
+            _activeConnSessionMap[conn.Id] = sessionId;
+
+            conn.LastConnected = DateTime.UtcNow;
+            await Store.UpdateAsync(conn);
+
+            Snackbar.Add($"Connected to {conn.Host}", Severity.Success);
+            await OnConnected.InvokeAsync(sessionId);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Connection failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _connectingId = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OpenEditDialog(SavedConnection conn)
+    {
+        // Decrypt existing password to pre-fill the form
+        var existingPassword = string.Empty;
+        if (conn.HasStoredCredentials)
+        {
+            var encryptedData = await Store.GetCredentialAsync(conn.Id);
+            if (!string.IsNullOrEmpty(encryptedData))
+            {
+                var creds = await Crypto.DecryptCredentialAsync(conn.Id, encryptedData);
+                if (creds.HasValue)
+                    existingPassword = creds.Value.Password;
+            }
+        }
+
+        var parameters = new DialogParameters<ConnectionForm>
+        {
+            { x => x.Connection, CloneConnection(conn) },
+            { x => x.IsNew, false },
+            { x => x.ExistingPassword, existingPassword }
+        };
+
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<ConnectionForm>("Edit Connection", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled && result.Data is ConnectionFormResult formResult)
+        {
+            // Check if this was a delete action (empty password + no save)
+            if (string.IsNullOrEmpty(formResult.Password) && !formResult.SaveCredentials && !formResult.ConnectNow)
+            {
+                await Store.DeleteCredentialAsync(conn.Id);
+                await Store.DeleteAsync(conn.Id);
+                _connections = await Store.GetAllAsync();
+                Snackbar.Add($"Deleted {conn.Name}", Severity.Info);
+                StateHasChanged();
+                return;
+            }
+
+            await SaveConnectionAndCredentials(formResult);
+            _connections = await Store.GetAllAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task OpenAddDialog()
+    {
+        var parameters = new DialogParameters<ConnectionForm>
+        {
+            { x => x.Connection, new SavedConnection() },
+            { x => x.IsNew, true }
+        };
+
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<ConnectionForm>("New Connection", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled && result.Data is ConnectionFormResult formResult)
+        {
+            var conn = formResult.Connection;
+            await Store.AddAsync(conn);
+            await SaveConnectionAndCredentials(formResult);
+            _connections = await Store.GetAllAsync();
+
+            if (formResult.ConnectNow)
+            {
+                await ConnectToServer(conn, formResult.Password);
+            }
+
+            StateHasChanged();
+        }
+    }
+
+    private async Task SaveConnectionAndCredentials(ConnectionFormResult formResult)
+    {
+        var conn = formResult.Connection;
+
+        if (formResult.SaveCredentials && !string.IsNullOrEmpty(formResult.Password))
+        {
+            try
+            {
+                var encrypted = await Crypto.EncryptCredentialAsync(conn.Id, conn.Username, formResult.Password);
+                if (!string.IsNullOrEmpty(encrypted))
+                {
+                    await Store.SaveCredentialAsync(conn.Id, encrypted);
+                    conn.HasStoredCredentials = true;
+                }
+                else
+                {
+                    Snackbar.Add("Failed to encrypt credentials", Severity.Warning);
+                    conn.HasStoredCredentials = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Failed to save credentials: {ex.Message}", Severity.Warning);
+                conn.HasStoredCredentials = false;
+            }
+        }
+        else
+        {
+            await Store.DeleteCredentialAsync(conn.Id);
+            conn.HasStoredCredentials = false;
+        }
+
+        await Store.UpdateAsync(conn);
+    }
+
+    private static SavedConnection CloneConnection(SavedConnection source) => new()
+    {
+        Id = source.Id,
+        Name = source.Name,
+        Host = source.Host,
+        Port = source.Port,
+        Username = source.Username,
+        AuthMethod = source.AuthMethod,
+        SortOrder = source.SortOrder,
+        LastConnected = source.LastConnected,
+        DefaultPath = source.DefaultPath,
+        HasStoredCredentials = source.HasStoredCredentials
+    };
+}
