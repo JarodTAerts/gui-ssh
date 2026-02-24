@@ -15,16 +15,12 @@
     </div>
 
     <div class="session-tabs-content">
-        @if (_activeTab == "terminal")
-        {
-            <div style="height: 100%; background: #1e1e2e; padding: 4px;">
-                <GuiSsh.Components.Terminal.TerminalView SessionId="@SessionId" />
-            </div>
-        }
-        else
-        {
+        <div style="height: 100%; background: var(--surface-inset); padding: 4px; @(_activeTab != "terminal" ? "display: none;" : "")">
+            <GuiSsh.Components.Terminal.TerminalView SessionId="@SessionId" />
+        </div>
+        <div style="height: 100%; @(_activeTab != "desktop" ? "display: none;" : "")">
             <GuiSsh.Client.Components.Desktop.DesktopView SessionId="@SessionId" />
-        }
+        </div>
     </div>
 </div>
 

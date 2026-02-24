@@ -3,9 +3,10 @@
 @inject ShellOutputParser OutputParser
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@inject IJSRuntime JS
 
 @* Breadcrumb Navigation *@
-<div style="padding: 8px 12px; background: #181825; border-bottom: 1px solid #313244;
+<div style="padding: 8px 12px; background: var(--surface-dim); border-bottom: 1px solid var(--surface-container);
             display: flex; align-items: center; gap: 4px;">
     <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
                    OnClick="NavigateUp" Disabled="@(_currentPath == "/")"
@@ -28,6 +29,10 @@
     <MudSpacer />
 
     @* Toolbar *@
+    <InputFile OnChange="OnInputFileChanged" multiple
+               id="@_fileInputId" style="display: none;" />
+    <MudIconButton Icon="@Icons.Material.Filled.Upload" Size="Size.Small"
+                   Color="Color.Default" OnClick="TriggerFilePicker" />
     <MudIconButton Icon="@Icons.Material.Filled.NoteAdd" Size="Size.Small"
                    Color="Color.Default" OnClick="CreateNewFile" />
     <MudIconButton Icon="@Icons.Material.Filled.CreateNewFolder" Size="Size.Small"
@@ -38,9 +43,22 @@
                          Size="Size.Small" Color="Color.Default" />
 </div>
 
-@* File List *@
-<div style="padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; overflow-y: auto; height: calc(100% - 48px);">
-    @if (_loading)
+@* File List — entire area is a drop target for both internal moves and browser file uploads *@
+<div class="file-list @(_browserDragActive ? "drop-active" : "") @(_draggedEntry != null ? "dragging-active" : "")"
+     @ondragover="OnDragOverBackground"
+     @ondragover:preventDefault="true"
+     @ondrop="OnDropOnBackground"
+     @ondrop:preventDefault="true"
+     @ondragenter="OnBrowserDragEnter"
+     @ondragleave="OnBrowserDragLeave">
+    @if (_uploading)
+    {
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; padding: 24px;">
+            <MudProgressCircular Indeterminate="true" Size="Size.Large" Class="mb-3" />
+            <MudText Typo="Typo.body2" Color="Color.Secondary">@_uploadStatus</MudText>
+        </div>
+    }
+    else if (_loading)
     {
         <MudProgressCircular Indeterminate="true" Size="Size.Medium" Class="mx-auto my-8" />
     }
@@ -48,45 +66,109 @@
     {
         @foreach (var entry in GetVisibleEntries())
         {
-            <div class="file-entry" @ondblclick="() => OnDoubleClick(entry)"
-                 @oncontextmenu="(e) => OnRightClick(e, entry)"
+            var entryCopy = entry;
+            var isSelected = _selectedEntry?.FullPath == entry.FullPath;
+            var isDragTarget = _dragOverEntry?.FullPath == entry.FullPath && entry.IsDirectory;
+
+            <div class="file-entry @(isSelected ? "selected" : "") @(isDragTarget ? "drag-over" : "") @(_draggedEntry?.FullPath == entry.FullPath ? "dragging" : "") @(entry.IsDirectory ? "is-folder" : "")"
+                 draggable="true"
+                 @ondragstart="() => OnDragStart(entryCopy)"
+                 @ondragend="OnDragEndFile"
+                 @ondragover="() => OnDragOverEntry(entryCopy)"
+                 @ondragover:preventDefault="true"
+                 @ondrop="() => OnDropOnEntry(entryCopy)"
+                 @ondrop:preventDefault="true"
+                 @ondblclick="() => OnDoubleClick(entryCopy)"
+                 @oncontextmenu="(e) => OnRightClick(e, entryCopy)"
                  @oncontextmenu:preventDefault="true"
-                 style="width: 90px; padding: 8px; text-align: center; border-radius: 6px;
-                        cursor: pointer; user-select: none;"
-                 @onclick="() => SelectEntry(entry)">
+                 @onclick="() => SelectEntry(entryCopy)">
                 <MudIcon Icon="@GetFileIcon(entry)" Size="Size.Large"
                          Color="@GetFileColor(entry)" />
-                <MudText Typo="Typo.caption" Style="word-break: break-all; color: #cdd6f4;
+                <MudText Typo="Typo.caption" Style="word-break: break-all; color: var(--on-surface);
                          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
                          overflow: hidden; margin-top: 4px;">
                     @entry.Name
                 </MudText>
             </div>
         }
+
     }
 </div>
 
 @* Context Menu *@
-<MudMenu @ref="_contextMenu" ActivationEvent="@MouseEvent.RightClick"
-         Dense="true" PositionAtCursor="true">
-    <ChildContent>
-        <div></div>
-    </ChildContent>
-</MudMenu>
+@if (_contextMenuVisible)
+{
+    <div class="context-menu-overlay" @onclick="CloseContextMenu" @oncontextmenu="CloseContextMenu"
+         @oncontextmenu:preventDefault="true" @onclick:stopPropagation="true"></div>
+    <div class="context-menu" style="left: @(_contextMenuX)px; top: @(_contextMenuY)px;"
+         @onclick:stopPropagation="true">
+        <button class="context-menu-item" @onclick="ContextOpen">
+            <MudIcon Icon="@Icons.Material.Filled.OpenInNew" Size="Size.Small" />
+            <span>Open</span>
+        </button>
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item" @onclick="ContextDownload">
+            <MudIcon Icon="@Icons.Material.Filled.Download" Size="Size.Small" />
+            <span>Download</span>
+        </button>
+        @if (_contextMenuEntry?.IsDirectory == true)
+        {
+            <button class="context-menu-item" @onclick="ContextUploadToFolder">
+                <MudIcon Icon="@Icons.Material.Filled.Upload" Size="Size.Small" />
+                <span>Upload to here</span>
+            </button>
+        }
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item" @onclick="ContextRename">
+            <MudIcon Icon="@Icons.Material.Filled.DriveFileRenameOutline" Size="Size.Small" />
+            <span>Rename</span>
+        </button>
+        <button class="context-menu-item" @onclick="ContextMove">
+            <MudIcon Icon="@Icons.Material.Filled.DriveFileMove" Size="Size.Small" />
+            <span>Move to...</span>
+        </button>
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item" @onclick="ContextInfo">
+            <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" />
+            <span>Info</span>
+        </button>
+        <div class="context-menu-divider"></div>
+        <button class="context-menu-item danger" @onclick="ContextDelete">
+            <MudIcon Icon="@Icons.Material.Filled.Delete" Size="Size.Small" />
+            <span>Delete</span>
+        </button>
+    </div>
+}
 
 @code {
     [Parameter] public string SessionId { get; set; } = string.Empty;
     [Parameter] public string WindowId { get; set; } = string.Empty;
     [Parameter] public EventCallback<string> OnOpenFile { get; set; }
     [Parameter] public EventCallback<string> OnPathChanged { get; set; }
+    [Parameter] public EventCallback<FileEntry> OnShowInfo { get; set; }
+    [Parameter] public EventCallback<(string SessionId, string RemotePath)> OnDownload { get; set; }
+    [Parameter] public EventCallback<(string SessionId, string RemotePath, IBrowserFile File)> OnUpload { get; set; }
 
     private string _currentPath = "~";
     private List<FileEntry> _entries = new();
     private FileEntry? _selectedEntry;
     private bool _loading = true;
     private bool _showHidden = false;
+    private bool _uploading = false;
+    private bool _browserDragActive = false;
+    private string _uploadStatus = "";
     private List<BreadcrumbItem> _breadcrumbs = new();
-    private MudMenu? _contextMenu;
+    private string _fileInputId = $"file-upload-{Guid.NewGuid():N}";
+
+    // Drag-to-move state
+    private FileEntry? _draggedEntry;
+    private FileEntry? _dragOverEntry;
+
+    // Context menu state
+    private bool _contextMenuVisible;
+    private double _contextMenuX;
+    private double _contextMenuY;
+    private FileEntry? _contextMenuEntry;
 
     protected override async Task OnInitializedAsync()
     {
@@ -173,12 +255,260 @@
     private void OnRightClick(MouseEventArgs e, FileEntry entry)
     {
         _selectedEntry = entry;
-        // Context menu functionality will be enhanced in future iteration
+        _contextMenuEntry = entry;
+        _contextMenuX = e.ClientX;
+        _contextMenuY = e.ClientY;
+        _contextMenuVisible = true;
+    }
+
+    private void CloseContextMenu()
+    {
+        _contextMenuVisible = false;
     }
 
     private void SelectEntry(FileEntry entry)
     {
         _selectedEntry = entry;
+    }
+
+    // --- Drag-to-move ---
+
+    private void OnDragStart(FileEntry entry)
+    {
+        _draggedEntry = entry;
+    }
+
+    private void OnDragOverEntry(FileEntry entry)
+    {
+        if (entry.IsDirectory && _draggedEntry != null && _draggedEntry.FullPath != entry.FullPath)
+        {
+            _dragOverEntry = entry;
+        }
+    }
+
+    private void OnDragOverBackground()
+    {
+        _dragOverEntry = null;
+    }
+
+    private void OnBrowserDragEnter()
+    {
+        // Only show the drop-active state when no internal file is being dragged
+        if (_draggedEntry == null)
+            _browserDragActive = true;
+    }
+
+    private void OnBrowserDragLeave()
+    {
+        _browserDragActive = false;
+    }
+
+    private async Task OnDropOnBackground()
+    {
+        _browserDragActive = false;
+        // If an internal file was dragged to the background (not onto a folder), ignore it
+        if (_draggedEntry != null)
+        {
+            _draggedEntry = null;
+            _dragOverEntry = null;
+        }
+    }
+
+    private void OnDragEndFile()
+    {
+        _draggedEntry = null;
+        _dragOverEntry = null;
+    }
+
+    private async Task OnDropOnEntry(FileEntry targetFolder)
+    {
+        if (_draggedEntry == null || !targetFolder.IsDirectory) return;
+        if (_draggedEntry.FullPath == targetFolder.FullPath) return;
+
+        var sourcePath = _draggedEntry.FullPath;
+        var destPath = targetFolder.FullPath.TrimEnd('/') + "/" + _draggedEntry.Name;
+        var sourceName = _draggedEntry.Name;
+
+        _draggedEntry = null;
+        _dragOverEntry = null;
+
+        var cmd = CommandBuilder.Rename(sourcePath, destPath);
+        var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+        if (result.Success)
+        {
+            Snackbar.Add($"Moved {sourceName} → {targetFolder.Name}/", Severity.Success);
+            await LoadDirectory();
+        }
+        else
+        {
+            Snackbar.Add($"Move failed: {result.StdErr}", Severity.Error);
+        }
+    }
+
+    // --- Context menu actions ---
+
+    private async Task ContextOpen()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null) return;
+        await OnDoubleClick(_contextMenuEntry);
+    }
+
+    private async Task ContextRename()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null) return;
+
+        var newName = await PromptForName("Rename", $"Rename '{_contextMenuEntry.Name}' to:", _contextMenuEntry.Name);
+        if (string.IsNullOrWhiteSpace(newName) || newName == _contextMenuEntry.Name) return;
+
+        var newPath = _currentPath.TrimEnd('/') + "/" + newName;
+        var cmd = CommandBuilder.Rename(_contextMenuEntry.FullPath, newPath);
+        var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+        if (result.Success)
+        {
+            Snackbar.Add($"Renamed to {newName}", Severity.Success);
+            await LoadDirectory();
+        }
+        else
+        {
+            Snackbar.Add($"Rename failed: {result.StdErr}", Severity.Error);
+        }
+    }
+
+    private async Task ContextMove()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null) return;
+
+        var dest = await PromptForName("Move To", $"Enter destination path for '{_contextMenuEntry.Name}':");
+        if (string.IsNullOrWhiteSpace(dest)) return;
+
+        // If it's a relative path, resolve against current directory
+        if (!dest.StartsWith('/'))
+            dest = _currentPath.TrimEnd('/') + "/" + dest;
+
+        var cmd = CommandBuilder.Rename(_contextMenuEntry.FullPath, dest);
+        var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+        if (result.Success)
+        {
+            Snackbar.Add($"Moved {_contextMenuEntry.Name}", Severity.Success);
+            await LoadDirectory();
+        }
+        else
+        {
+            Snackbar.Add($"Move failed: {result.StdErr}", Severity.Error);
+        }
+    }
+
+    private async Task ContextDelete()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null) return;
+
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Delete",
+            $"Are you sure you want to delete '{_contextMenuEntry.Name}'?",
+            yesText: "Delete",
+            cancelText: "Cancel");
+
+        if (confirmed != true) return;
+
+        var cmd = CommandBuilder.Delete(_contextMenuEntry.FullPath, recursive: _contextMenuEntry.IsDirectory);
+        var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+        if (result.Success)
+        {
+            Snackbar.Add($"Deleted {_contextMenuEntry.Name}", Severity.Success);
+            await LoadDirectory();
+        }
+        else
+        {
+            Snackbar.Add($"Delete failed: {result.StdErr}", Severity.Error);
+        }
+    }
+
+    private async Task ContextInfo()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null) return;
+        await OnShowInfo.InvokeAsync(_contextMenuEntry);
+    }
+
+    private async Task ContextDownload()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null) return;
+        await OnDownload.InvokeAsync((SessionId, _contextMenuEntry.FullPath));
+    }
+
+    private async Task ContextUploadToFolder()
+    {
+        CloseContextMenu();
+        if (_contextMenuEntry == null || !_contextMenuEntry.IsDirectory) return;
+        _uploadTargetPath = _contextMenuEntry.FullPath;
+        await TriggerFilePicker();
+    }
+
+    private string? _uploadTargetPath;
+
+    private async Task TriggerFilePicker()
+    {
+        await JS.InvokeVoidAsync("eval", $"document.getElementById('{_fileInputId}')?.click()");
+    }
+
+    private async Task OnInputFileChanged(InputFileChangeEventArgs e)
+    {
+        var files = e.GetMultipleFiles(20);
+        if (files.Count == 0) return;
+        await OnFilesUploaded(files);
+    }
+
+    private async Task OnFilesUploaded(IReadOnlyList<IBrowserFile> files)
+    {
+        if (files == null || files.Count == 0) return;
+
+        var targetDir = _uploadTargetPath ?? _currentPath;
+        _uploadTargetPath = null;
+
+        _uploading = true;
+        _uploadStatus = $"Uploading {files.Count} file(s)...";
+        StateHasChanged();
+
+        try
+        {
+            foreach (var file in files)
+            {
+                _uploadStatus = $"Uploading {file.Name}...";
+                StateHasChanged();
+
+                var remotePath = targetDir.TrimEnd('/') + "/" + file.Name;
+                await OnUpload.InvokeAsync((SessionId, remotePath, file));
+            }
+
+            Snackbar.Add($"Uploaded {files.Count} file(s)", Severity.Success);
+            await LoadDirectory();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _uploading = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
     }
 
     private async Task NavigateTo(string path)
@@ -236,12 +566,13 @@
         }
     }
 
-    private async Task<string?> PromptForName(string title, string message)
+    private async Task<string?> PromptForName(string title, string message, string defaultValue = "")
     {
         var parameters = new DialogParameters<InputDialog>
         {
             { x => x.Message, message },
-            { x => x.Label, "Name" }
+            { x => x.Label, "Name" },
+            { x => x.DefaultValue, defaultValue }
         };
         var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
         var dialog = await DialogService.ShowAsync<InputDialog>(title, parameters, options);

@@ -21,9 +21,19 @@ public class SshSessionManager : IDisposable
 
     public async Task<string> ConnectAsync(string host, int port, string username, string password)
     {
-        var sessionId = Guid.NewGuid().ToString();
-
         var client = _factory.CreateClient(host, port, username, password);
+        return await ConnectClientAsync(client, host, port);
+    }
+
+    public async Task<string> ConnectWithKeyAsync(string host, int port, string username, string privateKey, string? passphrase = null)
+    {
+        var client = _factory.CreateClientWithKey(host, port, username, privateKey, passphrase);
+        return await ConnectClientAsync(client, host, port);
+    }
+
+    private async Task<string> ConnectClientAsync(SshClient client, string host, int port)
+    {
+        var sessionId = Guid.NewGuid().ToString();
 
         await Task.Run(() => client.Connect());
 
@@ -106,6 +116,123 @@ public class SshSessionManager : IDisposable
         var session = GetSession(sessionId);
         return session?.IsConnected ?? false;
     }
+
+    /// <summary>
+    /// Downloads a file from the remote server via SFTP and returns it as a byte array.
+    /// For directories, creates a tar.gz archive first.
+    /// </summary>
+    public async Task<(byte[] Data, string FileName)> DownloadFileAsync(string sessionId, string remotePath)
+    {
+        var session = GetSession(sessionId);
+        if (session == null || !session.IsConnected)
+            throw new InvalidOperationException("Session not found or disconnected.");
+
+        // Check if it's a directory
+        var checkResult = await Task.Run(() =>
+        {
+            using var cmd = session.SshClient.RunCommand($"test -d {EscapePath(remotePath)} && echo DIR || echo FILE");
+            return cmd.Result.Trim();
+        });
+
+        if (checkResult == "DIR")
+        {
+            return await DownloadDirectoryAsArchiveAsync(session, remotePath);
+        }
+
+        return await Task.Run(() =>
+        {
+            using var sftp = new SftpClient(session.SshClient.ConnectionInfo);
+            sftp.Connect();
+            try
+            {
+                using var ms = new MemoryStream();
+                sftp.DownloadFile(remotePath, ms);
+                var fileName = remotePath.Split('/').Last();
+                return (ms.ToArray(), fileName);
+            }
+            finally
+            {
+                sftp.Disconnect();
+            }
+        });
+    }
+
+    private async Task<(byte[] Data, string FileName)> DownloadDirectoryAsArchiveAsync(ActiveSession session, string remotePath)
+    {
+        var dirName = remotePath.TrimEnd('/').Split('/').Last();
+        var archiveName = $"/tmp/.guissh_{Guid.NewGuid():N}.tar.gz";
+
+        try
+        {
+            // Create tar.gz on remote
+            var tarResult = await Task.Run(() =>
+            {
+                var parentDir = remotePath[..remotePath.TrimEnd('/').LastIndexOf('/')];
+                if (string.IsNullOrEmpty(parentDir)) parentDir = "/";
+                using var cmd = session.SshClient.RunCommand($"cd {EscapePath(parentDir)} && tar czf {archiveName} {EscapePath(dirName)}");
+                return cmd;
+            });
+
+            if (tarResult.ExitStatus != 0)
+                throw new InvalidOperationException($"Failed to archive directory: {tarResult.Error}");
+
+            // Download the archive via SFTP
+            var data = await Task.Run(() =>
+            {
+                using var sftp = new SftpClient(session.SshClient.ConnectionInfo);
+                sftp.Connect();
+                try
+                {
+                    using var ms = new MemoryStream();
+                    sftp.DownloadFile(archiveName, ms);
+                    return ms.ToArray();
+                }
+                finally
+                {
+                    sftp.Disconnect();
+                }
+            });
+
+            return (data, $"{dirName}.tar.gz");
+        }
+        finally
+        {
+            // Clean up remote archive
+            _ = Task.Run(() =>
+            {
+                try { session.SshClient.RunCommand($"rm -f {archiveName}"); } catch { }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Uploads a file to the remote server via SFTP.
+    /// </summary>
+    public async Task UploadFileAsync(string sessionId, string remotePath, Stream fileStream)
+    {
+        var session = GetSession(sessionId);
+        if (session == null || !session.IsConnected)
+            throw new InvalidOperationException("Session not found or disconnected.");
+
+        await Task.Run(() =>
+        {
+            using var sftp = new SftpClient(session.SshClient.ConnectionInfo);
+            sftp.Connect();
+            try
+            {
+                sftp.UploadFile(fileStream, remotePath, canOverride: true);
+            }
+            finally
+            {
+                sftp.Disconnect();
+            }
+        });
+
+        session.LastActivity = DateTime.UtcNow;
+        _logger.LogInformation("Uploaded file to {Path} on session {SessionId}", remotePath, sessionId);
+    }
+
+    private static string EscapePath(string path) => $"'{path.Replace("'", "'\\''")}'";
 
     public Task DisconnectAsync(string sessionId)
     {

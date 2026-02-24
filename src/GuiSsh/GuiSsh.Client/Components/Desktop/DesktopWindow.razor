@@ -8,9 +8,9 @@
             width: @(State.Width)px; height: @(State.Height)px;
             z-index: @State.ZIndex;
             display: flex; flex-direction: column;
-            background: #1e1e2e; border: 1px solid #45475a;
+            background: var(--surface-base); border: 1px solid var(--surface-bright);
             border-radius: 8px; overflow: hidden;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5);"
+            box-shadow: var(--shadow-lg);"
      @onclick="OnFocus"
      @onclick:stopPropagation="true">
 
@@ -18,10 +18,10 @@
     <div class="window-titlebar"
          @onpointerdown="OnTitleBarPointerDown"
          style="display: flex; align-items: center; padding: 6px 10px;
-                background: #313244; cursor: move; user-select: none;
-                border-bottom: 1px solid #45475a; flex-shrink: 0; touch-action: none;">
+                background: var(--surface-container); cursor: move; user-select: none;
+                border-bottom: 1px solid var(--surface-bright); flex-shrink: 0; touch-action: none;">
         <MudIcon Icon="@GetWindowIcon()" Size="Size.Small" Color="Color.Primary" Class="mr-2" />
-        <MudText Typo="Typo.body2" Style="flex: 1; color: #cdd6f4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+        <MudText Typo="Typo.body2" Style="flex: 1; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
             @State.Title
         </MudText>
         <MudIconButton Icon="@Icons.Material.Filled.Minimize" Size="Size.Small"
@@ -33,9 +33,20 @@
     </div>
 
     @* Window Content *@
-    <div style="flex: 1; overflow: auto; position: relative;">
+    <div style="flex: 1; overflow: auto; position: relative; display: flex; flex-direction: column;">
         @ChildContent
     </div>
+
+    @* Resize Handles *@
+    <div class="resize-handle resize-handle-e"
+         @onpointerdown='(e) => OnResizePointerDown(e, "e")'
+         @onpointerdown:stopPropagation="true"></div>
+    <div class="resize-handle resize-handle-s"
+         @onpointerdown='(e) => OnResizePointerDown(e, "s")'
+         @onpointerdown:stopPropagation="true"></div>
+    <div class="resize-handle resize-handle-se"
+         @onpointerdown='(e) => OnResizePointerDown(e, "se")'
+         @onpointerdown:stopPropagation="true"></div>
 </div>
 
 @code {
@@ -47,35 +58,40 @@
 
     private ElementReference _windowRef;
     private IJSObjectReference? _dragModule;
-    private double _dragStartX;
-    private double _dragStartY;
-    private double _windowStartX;
-    private double _windowStartY;
+    private DotNetObjectReference<DesktopWindow>? _dotNetRef;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
             _dragModule = await JS.InvokeAsync<IJSObjectReference>("import", "/js/drag-interop.js");
+            _dotNetRef = DotNetObjectReference.Create(this);
         }
     }
 
     private async Task OnTitleBarPointerDown(PointerEventArgs e)
     {
-        // Only drag on left mouse button and not on icon buttons
         if (e.Button != 0) return;
-
-        _dragStartX = e.ClientX;
-        _dragStartY = e.ClientY;
-        _windowStartX = State.X;
-        _windowStartY = State.Y;
 
         await OnFocus.InvokeAsync();
 
-        if (_dragModule != null)
+        if (_dragModule != null && _dotNetRef != null)
         {
-            var dotNetRef = DotNetObjectReference.Create(this);
-            await _dragModule.InvokeVoidAsync("startDrag", dotNetRef, _dragStartX, _dragStartY, _windowStartX, _windowStartY);
+            await _dragModule.InvokeVoidAsync("startDrag", _dotNetRef,
+                e.ClientX, e.ClientY, State.X, State.Y);
+        }
+    }
+
+    private async Task OnResizePointerDown(PointerEventArgs e, string direction)
+    {
+        if (e.Button != 0) return;
+
+        await OnFocus.InvokeAsync();
+
+        if (_dragModule != null && _dotNetRef != null)
+        {
+            await _dragModule.InvokeVoidAsync("startResize", _dotNetRef,
+                e.ClientX, e.ClientY, State.Width, State.Height, direction);
         }
     }
 
@@ -88,24 +104,33 @@
     }
 
     [JSInvokable]
-    public void OnDragEnd()
+    public void OnDragEnd() { }
+
+    [JSInvokable]
+    public void OnResizeMove(double newWidth, double newHeight)
     {
-        // Drag completed — JS cleaned up listeners
+        State.Width = newWidth;
+        State.Height = newHeight;
+        InvokeAsync(StateHasChanged);
     }
+
+    [JSInvokable]
+    public void OnResizeEnd() { }
 
     private string GetWindowIcon() => State.Type switch
     {
         WindowType.FileManager => Icons.Material.Filled.Folder,
         WindowType.Editor => Icons.Material.Filled.EditNote,
         WindowType.ImageViewer => Icons.Material.Filled.Image,
+        WindowType.Info => Icons.Material.Filled.Info,
+        WindowType.TaskManager => Icons.Material.Filled.MonitorHeart,
         _ => Icons.Material.Filled.Window
     };
 
     public async ValueTask DisposeAsync()
     {
+        _dotNetRef?.Dispose();
         if (_dragModule != null)
-        {
             await _dragModule.DisposeAsync();
-        }
     }
 }

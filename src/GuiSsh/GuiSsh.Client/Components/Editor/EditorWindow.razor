@@ -1,33 +1,75 @@
 @inject ISshService SshService
 @inject ShellCommandBuilder CommandBuilder
+@inject IDialogService DialogService
 @inject ISnackbar Snackbar
 
-<div style="display: flex; flex-direction: column; height: 100%;">
+<div style="display: flex; flex-direction: column; height: 100%;"
+     @ondragover:preventDefault="true"
+     @ondrop="OnFileDrop"
+     @ondrop:preventDefault="true">
     @if (_loading)
     {
         <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
     }
 
-    <textarea value="@_content"
-              style="flex: 1; background: #1e1e2e; color: #cdd6f4; border: none;
-                     padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace;
-                     font-size: 14px; resize: none; outline: none; tab-size: 4;"
-              disabled="@_loading"
-              @oninput="OnContentChanged">
-    </textarea>
+    @if (!_hasFile && !_loading && string.IsNullOrEmpty(_content))
+    {
+        @* Empty state — prompt to open or start typing *@
+        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                    gap: 16px; padding: 24px; color: var(--on-surface-muted);">
+            <MudIcon Icon="@Icons.Material.Filled.EditNote" Size="Size.Large"
+                     Style="font-size: 3.5rem; opacity: 0.4;" />
+            <MudText Typo="Typo.body1" Color="Color.Secondary">Start typing or open a file</MudText>
+            <div style="display: flex; gap: 8px;">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.FolderOpen"
+                           OnClick="OpenFileDialog">
+                    Open File
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Default" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="StartBlankFile">
+                    New File
+                </MudButton>
+            </div>
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Style="opacity: 0.6;">
+                You can also drag a file from the File Manager into this window
+            </MudText>
+        </div>
+    }
+    else
+    {
+        <textarea value="@_content"
+                  style="flex: 1; background: var(--surface-base); color: var(--on-surface); border: none;
+                         padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace;
+                         font-size: 14px; resize: none; outline: none; tab-size: 4;"
+                  disabled="@_loading"
+                  @oninput="OnContentChanged">
+        </textarea>
+    }
 
     <div style="display: flex; align-items: center; padding: 6px 12px;
-                background: #181825; border-top: 1px solid #313244; gap: 8px;">
-        <MudText Typo="Typo.caption" Color="Color.Secondary">@_fileName</MudText>
+                background: var(--surface-dim); border-top: 1px solid var(--surface-container); gap: 8px;">
+        <MudIconButton Icon="@Icons.Material.Filled.FolderOpen" Size="Size.Small"
+                       Color="Color.Default" OnClick="OpenFileDialog" />
+        <MudText Typo="Typo.caption" Color="Color.Secondary">@StatusText</MudText>
         @if (_isDirty)
         {
             <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">Modified</MudChip>
         }
         <MudSpacer />
-        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
-                   StartIcon="@Icons.Material.Filled.Save"
-                   OnClick="SaveFile" Disabled="@(!_isDirty || _saving)">
-            Save
+        @if (_hasFile && !string.IsNullOrEmpty(FilePath))
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Save"
+                       OnClick="SaveFile" Disabled="@(!_isDirty || _saving)">
+                Save
+            </MudButton>
+        }
+        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Default"
+                   StartIcon="@Icons.Material.Filled.SaveAs"
+                   OnClick="SaveAsFile" Disabled="@(string.IsNullOrEmpty(_content) || _saving)">
+            Save As
         </MudButton>
     </div>
 </div>
@@ -35,18 +77,66 @@
 @code {
     [Parameter] public string SessionId { get; set; } = string.Empty;
     [Parameter] public string FilePath { get; set; } = string.Empty;
+    [Parameter] public EventCallback<string> OnTitleChanged { get; set; }
 
     private string _content = string.Empty;
     private string _originalContent = string.Empty;
     private string _fileName = string.Empty;
-    private bool _loading = true;
+    private bool _loading = false;
     private bool _saving = false;
     private bool _isDirty = false;
+    private bool _hasFile = false;
+
+    private string StatusText => _hasFile ? _fileName : "Untitled";
 
     protected override async Task OnInitializedAsync()
     {
-        _fileName = FilePath.Split('/').LastOrDefault() ?? FilePath;
-        await LoadFile();
+        if (!string.IsNullOrEmpty(FilePath))
+        {
+            _fileName = FilePath.Split('/').LastOrDefault() ?? FilePath;
+            _hasFile = true;
+            await LoadFile();
+        }
+    }
+
+    private void StartBlankFile()
+    {
+        _hasFile = true;
+        _content = string.Empty;
+        _originalContent = string.Empty;
+        _fileName = string.Empty;
+        FilePath = string.Empty;
+        _isDirty = false;
+    }
+
+    private async Task OpenFileDialog()
+    {
+        var parameters = new DialogParameters<InputDialog>
+        {
+            { x => x.Message, "Enter the full path to a file on the remote server" },
+            { x => x.Label, "Remote file path" },
+            { x => x.DefaultValue, "" }
+        };
+
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<InputDialog>("Open File", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled && result.Data is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            FilePath = path.Trim();
+            _fileName = FilePath.Split('/').LastOrDefault() ?? FilePath;
+            _hasFile = true;
+            await LoadFile();
+            await OnTitleChanged.InvokeAsync($"Editor: {_fileName}");
+        }
+    }
+
+    private async Task OnFileDrop(DragEventArgs e)
+    {
+        // This handles internal drag from FileManager — the file path comes via data
+        // We check the DataTransfer types for "text/plain" which would be a file path
+        // Note: Browser DnD from file manager uses Blazor drag events, path is set in JS
     }
 
     private async Task LoadFile()
@@ -63,6 +153,7 @@
             {
                 _content = result.StdOut;
                 _originalContent = _content;
+                _isDirty = false;
             }
             else
             {
@@ -81,10 +172,17 @@
     {
         _content = e.Value?.ToString() ?? string.Empty;
         _isDirty = _content != _originalContent;
+        if (!_hasFile) _hasFile = true;
     }
 
     private async Task SaveFile()
     {
+        if (string.IsNullOrEmpty(FilePath))
+        {
+            await SaveAsFile();
+            return;
+        }
+
         _saving = true;
         StateHasChanged();
 
@@ -110,5 +208,27 @@
         }
 
         _saving = false;
+    }
+
+    private async Task SaveAsFile()
+    {
+        var parameters = new DialogParameters<InputDialog>
+        {
+            { x => x.Message, "Enter the full path to save the file on the remote server" },
+            { x => x.Label, "Save as" },
+            { x => x.DefaultValue, FilePath }
+        };
+
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<InputDialog>("Save File As", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled && result.Data is string path && !string.IsNullOrWhiteSpace(path))
+        {
+            FilePath = path.Trim();
+            _fileName = FilePath.Split('/').LastOrDefault() ?? FilePath;
+            await OnTitleChanged.InvokeAsync($"Editor: {_fileName}");
+            await SaveFile();
+        }
     }
 }

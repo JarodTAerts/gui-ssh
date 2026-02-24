@@ -5,43 +5,85 @@
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
 
-<MudNavMenu>
-    @foreach (var conn in _connections)
-    {
-        var connCopy = conn;
-        var isConnected = IsConnected(conn.Id);
-        var isConnecting = _connectingId == conn.Id;
-
-        <div style="display: flex; align-items: center; padding: 2px 0;">
-            <MudNavLink OnClick="@(() => SelectConnection(connCopy))"
-                        Disabled="@isConnecting"
-                        Style="flex: 1; min-width: 0;"
-                        Icon="@(isConnecting ? Icons.Material.Filled.Sync : isConnected ? Icons.Material.Filled.Cloud : Icons.Material.Outlined.Cloud)"
-                        IconColor="@(isConnected ? Color.Success : Color.Default)">
-                @if (isConnecting)
-                {
-                    <MudProgressCircular Size="Size.Small" Indeterminate="true"
-                                         Style="width: 16px; height: 16px; margin-right: 6px;" />
-                }
-                <span style="display: flex; flex-direction: column; overflow: hidden;">
-                    <MudText Typo="Typo.body2" Style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">@conn.Name</MudText>
-                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">@conn.Host</MudText>
-                </span>
-            </MudNavLink>
-            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
-                           Color="Color.Default"
-                           OnClick="@(() => OpenEditDialog(connCopy))" />
+@if (_connections.Count == 0 && !_loading)
+{
+    @* Empty state — big add button *@
+    <div class="conn-empty" @onclick="OpenAddDialog">
+        <div class="conn-empty-icon">
+            <MudIcon Icon="@Icons.Material.Filled.AddCircleOutline" Size="Size.Large" Color="Color.Primary" />
         </div>
-    }
-</MudNavMenu>
+        <span class="conn-empty-text" style="text-align: center;">
+            <MudText Typo="Typo.subtitle2" Color="Color.Primary">Add Connection</MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Set up your first SSH server</MudText>
+        </span>
+    </div>
+}
+else
+{
+    @* Filter bar + add button *@
+    <div class="conn-filter-bar">
+        <MudTextField @bind-Value="_filter" Placeholder="Filter..." Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Immediate="true" Clearable="true"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Class="flex-grow-1" Style="font-size: 0.8rem;" />
+        <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small"
+                       Color="Color.Primary" OnClick="OpenAddDialog" />
+    </div>
 
-<MudDivider Class="my-2" />
+    @* Connection list *@
+    <div class="conn-list">
+        @foreach (var conn in GetFilteredConnections())
+        {
+            var connCopy = conn;
+            var isConnected = IsConnected(conn.Id);
+            var isConnecting = _connectingId == conn.Id;
+            var isSelected = _activeConnSessionMap.ContainsKey(conn.Id)
+                && _activeConnSessionMap[conn.Id] == ActiveSessionId;
 
-<MudButton FullWidth="true" StartIcon="@Icons.Material.Filled.Add"
-           Color="Color.Primary" Variant="Variant.Text"
-           OnClick="OpenAddDialog">
-    Add Connection
-</MudButton>
+            <div class="conn-card @(isSelected ? "active" : "") @(isConnecting ? "connecting" : "")"
+                 @onclick="@(() => SelectConnection(connCopy))">
+
+                @* Avatar with initials *@
+                <div class="conn-avatar" title="@conn.Name">
+                    @GetInitials(conn.Name)
+                </div>
+
+                @* Status dot *@
+                <span class="conn-status-dot @(isConnecting ? "connecting" : isConnected ? "connected" : "")"
+                      title="@(isConnecting ? "Connecting..." : isConnected ? "Connected" : "Disconnected")"></span>
+
+                @* Name + host *@
+                <div class="conn-info">
+                    <span class="conn-name">@conn.Name</span>
+                    <span class="conn-host">@conn.Username@@@conn.Host</span>
+                </div>
+
+                @* 3-dot menu — Connect / Edit / Delete *@
+                <div @onclick:stopPropagation="true">
+                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small"
+                             Color="Color.Default" Class="conn-edit-btn"
+                             AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                             Dense="true">
+                        <MudMenuItem Icon="@Icons.Material.Filled.PowerSettingsNew"
+                                     IconColor="@(isConnected ? Color.Success : Color.Default)"
+                                     OnClick="@(() => SelectConnection(connCopy))">
+                            @(isConnected ? "Switch to" : "Connect")
+                        </MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Edit"
+                                     OnClick="@(() => OpenEditDialog(connCopy))">
+                            Edit
+                        </MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Delete"
+                                     IconColor="Color.Error"
+                                     OnClick="@(() => DeleteConnection(connCopy))">
+                            Delete
+                        </MudMenuItem>
+                    </MudMenu>
+                </div>
+            </div>
+        }
+    </div>
+}
 
 @code {
     [Parameter] public string? ActiveSessionId { get; set; }
@@ -51,14 +93,38 @@
     private List<SavedConnection> _connections = new();
     private Dictionary<string, string> _activeConnSessionMap = new();
     private string? _connectingId;
+    private string _filter = string.Empty;
+    private bool _loading = true;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
             _connections = await Store.GetAllAsync();
+            _loading = false;
             StateHasChanged();
         }
+    }
+
+    private IEnumerable<SavedConnection> GetFilteredConnections()
+    {
+        if (string.IsNullOrWhiteSpace(_filter))
+            return _connections;
+
+        var f = _filter.Trim();
+        return _connections.Where(c =>
+            c.Name.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            c.Host.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            c.Username.Contains(f, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string GetInitials(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2)
+            return $"{parts[0][0]}{parts[1][0]}";
+        return name.Length >= 2 ? name[..2] : name;
     }
 
     private bool IsConnected(string connectionId)
@@ -79,20 +145,30 @@
             var encryptedData = await Store.GetCredentialAsync(conn.Id);
             if (!string.IsNullOrEmpty(encryptedData))
             {
-                var creds = await Crypto.DecryptCredentialAsync(conn.Id, encryptedData);
-                if (creds.HasValue)
+                if (conn.AuthMethod == AuthMethod.Password)
                 {
-                    await ConnectToServer(conn, creds.Value.Password);
-                    return;
+                    var creds = await Crypto.DecryptCredentialAsync(conn.Id, encryptedData);
+                    if (creds.HasValue)
+                    {
+                        await ConnectToServer(conn, creds.Value.Password, null, null);
+                        return;
+                    }
                 }
                 else
                 {
-                    Snackbar.Add("Stored credentials could not be decrypted. Please re-enter.", Severity.Warning);
+                    var keyCreds = await Crypto.DecryptKeyCredentialAsync(conn.Id, encryptedData);
+                    if (keyCreds.HasValue)
+                    {
+                        await ConnectToServer(conn, null, keyCreds.Value.PrivateKey, keyCreds.Value.Passphrase);
+                        return;
+                    }
                 }
+
+                Snackbar.Add("Stored credentials could not be decrypted. Please re-enter.", Severity.Warning);
             }
         }
 
-        // No stored credentials — prompt for password
+        // No stored credentials — prompt
         await PromptAndConnect(conn);
     }
 
@@ -112,18 +188,27 @@
         {
             // Save credentials if requested
             await SaveConnectionAndCredentials(formResult);
-            await ConnectToServer(conn, formResult.Password);
+            await ConnectWithFormResult(conn, formResult);
         }
     }
 
-    private async Task ConnectToServer(SavedConnection conn, string password)
+    private async Task ConnectToServer(SavedConnection conn, string? password, string? privateKey, string? passphrase)
     {
         _connectingId = conn.Id;
         StateHasChanged();
 
         try
         {
-            var sessionId = await SshService.ConnectAsync(conn.Host, conn.Port, conn.Username, password);
+            string sessionId;
+            if (!string.IsNullOrEmpty(privateKey))
+            {
+                sessionId = await SshService.ConnectWithKeyAsync(conn.Host, conn.Port, conn.Username, privateKey, passphrase);
+            }
+            else
+            {
+                sessionId = await SshService.ConnectAsync(conn.Host, conn.Port, conn.Username, password ?? string.Empty);
+            }
+
             _activeConnSessionMap[conn.Id] = sessionId;
 
             conn.LastConnected = DateTime.UtcNow;
@@ -143,18 +228,45 @@
         }
     }
 
+    private async Task ConnectWithFormResult(SavedConnection conn, ConnectionFormResult formResult)
+    {
+        if (conn.AuthMethod == AuthMethod.Password)
+        {
+            await ConnectToServer(conn, formResult.Password, null, null);
+        }
+        else
+        {
+            await ConnectToServer(conn, null, formResult.PrivateKey, formResult.Password);
+        }
+    }
+
     private async Task OpenEditDialog(SavedConnection conn)
     {
-        // Decrypt existing password to pre-fill the form
+        // Decrypt existing credentials to pre-fill the form
         var existingPassword = string.Empty;
+        var existingKey = string.Empty;
+        var existingPassphrase = string.Empty;
+
         if (conn.HasStoredCredentials)
         {
             var encryptedData = await Store.GetCredentialAsync(conn.Id);
             if (!string.IsNullOrEmpty(encryptedData))
             {
-                var creds = await Crypto.DecryptCredentialAsync(conn.Id, encryptedData);
-                if (creds.HasValue)
-                    existingPassword = creds.Value.Password;
+                if (conn.AuthMethod == AuthMethod.Password)
+                {
+                    var creds = await Crypto.DecryptCredentialAsync(conn.Id, encryptedData);
+                    if (creds.HasValue)
+                        existingPassword = creds.Value.Password;
+                }
+                else
+                {
+                    var keyCreds = await Crypto.DecryptKeyCredentialAsync(conn.Id, encryptedData);
+                    if (keyCreds.HasValue)
+                    {
+                        existingKey = keyCreds.Value.PrivateKey;
+                        existingPassphrase = keyCreds.Value.Passphrase;
+                    }
+                }
             }
         }
 
@@ -162,7 +274,9 @@
         {
             { x => x.Connection, CloneConnection(conn) },
             { x => x.IsNew, false },
-            { x => x.ExistingPassword, existingPassword }
+            { x => x.ExistingPassword, existingPassword },
+            { x => x.ExistingPrivateKey, existingKey },
+            { x => x.ExistingPassphrase, existingPassphrase }
         };
 
         var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
@@ -171,8 +285,9 @@
 
         if (result is not null && !result.Canceled && result.Data is ConnectionFormResult formResult)
         {
-            // Check if this was a delete action (empty password + no save)
-            if (string.IsNullOrEmpty(formResult.Password) && !formResult.SaveCredentials && !formResult.ConnectNow)
+            // Check if this was a delete action
+            if (string.IsNullOrEmpty(formResult.Password) && string.IsNullOrEmpty(formResult.PrivateKey)
+                && !formResult.SaveCredentials && !formResult.ConnectNow)
             {
                 await Store.DeleteCredentialAsync(conn.Id);
                 await Store.DeleteAsync(conn.Id);
@@ -209,9 +324,26 @@
 
             if (formResult.ConnectNow)
             {
-                await ConnectToServer(conn, formResult.Password);
+                await ConnectWithFormResult(conn, formResult);
             }
 
+            StateHasChanged();
+        }
+    }
+
+    private async Task DeleteConnection(SavedConnection conn)
+    {
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Delete Connection",
+            $"Are you sure you want to delete \"{conn.Name}\"?",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (confirmed == true)
+        {
+            await Store.DeleteCredentialAsync(conn.Id);
+            await Store.DeleteAsync(conn.Id);
+            _connections = await Store.GetAllAsync();
+            Snackbar.Add($"Deleted {conn.Name}", Severity.Info);
             StateHasChanged();
         }
     }
@@ -219,12 +351,24 @@
     private async Task SaveConnectionAndCredentials(ConnectionFormResult formResult)
     {
         var conn = formResult.Connection;
+        var hasCredential = conn.AuthMethod == AuthMethod.Password
+            ? !string.IsNullOrEmpty(formResult.Password)
+            : !string.IsNullOrEmpty(formResult.PrivateKey);
 
-        if (formResult.SaveCredentials && !string.IsNullOrEmpty(formResult.Password))
+        if (formResult.SaveCredentials && hasCredential)
         {
             try
             {
-                var encrypted = await Crypto.EncryptCredentialAsync(conn.Id, conn.Username, formResult.Password);
+                string encrypted;
+                if (conn.AuthMethod == AuthMethod.Password)
+                {
+                    encrypted = await Crypto.EncryptCredentialAsync(conn.Id, conn.Username, formResult.Password);
+                }
+                else
+                {
+                    encrypted = await Crypto.EncryptKeyCredentialAsync(conn.Id, conn.Username, formResult.PrivateKey, formResult.Password);
+                }
+
                 if (!string.IsNullOrEmpty(encrypted))
                 {
                     await Store.SaveCredentialAsync(conn.Id, encrypted);

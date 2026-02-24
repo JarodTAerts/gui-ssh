@@ -2,8 +2,9 @@
 @inject ShellCommandBuilder CommandBuilder
 @inject ShellOutputParser OutputParser
 @inject ISnackbar Snackbar
+@inject IJSRuntime JS
 
-<div class="desktop-surface" style="position: relative; height: 100%; background: #181825; overflow: hidden;">
+<div class="desktop-surface" style="position: relative; height: 100%; background: var(--surface-inset); overflow: hidden;">
     @foreach (var window in _windows.Where(w => !w.IsMinimized))
     {
         <DesktopWindow State="@window"
@@ -15,19 +16,37 @@
                 <FileManager SessionId="@SessionId"
                              WindowId="@window.Id"
                              OnOpenFile="(path) => OpenFileEditor(path)"
-                             OnPathChanged="(path) => OnFileManagerPathChanged(window, path)" />
+                             OnPathChanged="(path) => OnFileManagerPathChanged(window, path)"
+                             OnShowInfo="(entry) => OpenInfoWindow(entry)"
+                             OnDownload="(args) => HandleDownload(args.SessionId, args.RemotePath)"
+                             OnUpload="(args) => HandleUpload(args.SessionId, args.RemotePath, args.File)" />
             }
             else if (window.Type == WindowType.Editor)
             {
                 <EditorWindow SessionId="@SessionId"
-                              FilePath="@(window.Data.GetValueOrDefault("FilePath")?.ToString() ?? "")" />
+                              FilePath="@(window.Data.GetValueOrDefault("FilePath")?.ToString() ?? "")"
+                              OnTitleChanged="(title) => { window.Title = title; StateHasChanged(); }" />
+            }
+            else if (window.Type == WindowType.Info)
+            {
+                var infoEntry = window.Data.GetValueOrDefault("FileEntry") as FileEntry;
+                @if (infoEntry != null)
+                {
+                    <InfoPanel SessionId="@SessionId" Entry="@infoEntry" />
+                }
+            }
+            else if (window.Type == WindowType.TaskManager)
+            {
+                <TaskManager SessionId="@SessionId" />
             }
         </DesktopWindow>
     }
 
     <Taskbar Windows="@_windows"
              OnWindowClick="ToggleWindow"
-             OnNewFileManager="OpenFileManager" />
+             OnNewFileManager="OpenFileManager"
+             OnNewTextEditor="OpenBlankEditor"
+             OnNewTaskManager="OpenTaskManager" />
 </div>
 
 @code {
@@ -35,11 +54,17 @@
 
     private List<DesktopWindowState> _windows = new();
     private int _nextZIndex = 1;
+    private IJSObjectReference? _fileTransferModule;
 
     protected override void OnInitialized()
     {
         // Open a file manager by default
         OpenFileManager();
+    }
+
+    private async Task EnsureFileTransferModule()
+    {
+        _fileTransferModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "/js/file-transfer-interop.js");
     }
 
     private void OpenFileManager()
@@ -70,6 +95,46 @@
             Height = 450,
             ZIndex = _nextZIndex++,
             Data = new() { ["FilePath"] = filePath }
+        };
+        _windows.Add(window);
+    }
+
+    private void OpenBlankEditor()
+    {
+        var window = new DesktopWindowState
+        {
+            Title = "Text Editor",
+            Type = WindowType.Editor,
+            X = 100 + _windows.Count * 25,
+            Y = 60 + _windows.Count * 25,
+            Width = 650,
+            Height = 450,
+            ZIndex = _nextZIndex++,
+            Data = new() { ["FilePath"] = "" }
+        };
+        _windows.Add(window);
+    }
+
+    private void OpenTaskManager()
+    {
+        // Only allow one task manager instance
+        var existing = _windows.FirstOrDefault(w => w.Type == WindowType.TaskManager);
+        if (existing != null)
+        {
+            existing.IsMinimized = false;
+            FocusWindow(existing);
+            return;
+        }
+
+        var window = new DesktopWindowState
+        {
+            Title = "Task Manager",
+            Type = WindowType.TaskManager,
+            X = 60 + _windows.Count * 20,
+            Y = 40 + _windows.Count * 20,
+            Width = 820,
+            Height = 520,
+            ZIndex = _nextZIndex++
         };
         _windows.Add(window);
     }
@@ -105,9 +170,63 @@
     private void OnFileManagerPathChanged(DesktopWindowState window, string path)
     {
         window.Data["CurrentPath"] = path;
-        // Update title to show the directory name
         var dirName = path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "/";
         window.Title = dirName;
         StateHasChanged();
+    }
+
+    private void OpenInfoWindow(FileEntry entry)
+    {
+        var window = new DesktopWindowState
+        {
+            Title = $"{entry.Name} — Info",
+            Type = WindowType.Info,
+            X = 120 + _windows.Count * 20,
+            Y = 60 + _windows.Count * 20,
+            Width = 380,
+            Height = 420,
+            ZIndex = _nextZIndex++,
+            Data = new() { ["FileEntry"] = entry }
+        };
+        _windows.Add(window);
+        StateHasChanged();
+    }
+
+    private async Task HandleDownload(string sessionId, string remotePath)
+    {
+        try
+        {
+            Snackbar.Add($"Downloading {remotePath.Split('/').Last()}...", Severity.Info);
+
+            var (data, fileName) = await SshService.DownloadFileAsync(sessionId, remotePath);
+
+            await EnsureFileTransferModule();
+            var base64 = Convert.ToBase64String(data);
+            await _fileTransferModule!.InvokeVoidAsync("downloadFile", fileName, base64, "application/octet-stream");
+
+            Snackbar.Add($"Downloaded {fileName}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Download failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task HandleUpload(string sessionId, string remotePath, IBrowserFile file)
+    {
+        try
+        {
+            // Read up to 100MB — copy to MemoryStream because IBrowserFile streams
+            // don't support synchronous reads required by the SSH library
+            using var browserStream = file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024);
+            using var memoryStream = new MemoryStream();
+            await browserStream.CopyToAsync(memoryStream);
+            memoryStream.Position = 0;
+            await SshService.UploadFileAsync(sessionId, remotePath, memoryStream, file.Name);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Upload of {file.Name} failed: {ex.Message}", Severity.Error);
+        }
     }
 }

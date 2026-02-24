@@ -4,7 +4,9 @@ public enum WindowType
 {
     FileManager,
     Editor,
-    ImageViewer
+    ImageViewer,
+    Info,
+    TaskManager
 }
 
 public class DesktopWindowState

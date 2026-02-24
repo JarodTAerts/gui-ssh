@@ -20,10 +20,49 @@
                           Required="true" RequiredError="Username is required"
                           Variant="Variant.Outlined" Class="mb-3" />
 
-            <MudTextField @bind-Value="_password" Label="Password"
-                          InputType="InputType.Password"
-                          Required="true" RequiredError="Password is required"
-                          Variant="Variant.Outlined" Class="mb-3" />
+            <MudSelect @bind-Value="Connection.AuthMethod" Label="Authentication"
+                       Variant="Variant.Outlined" Class="mb-3">
+                <MudSelectItem Value="AuthMethod.Password">Password</MudSelectItem>
+                <MudSelectItem Value="AuthMethod.PrivateKey">SSH Key</MudSelectItem>
+                <MudSelectItem Value="AuthMethod.KeyAndPassphrase">SSH Key + Passphrase</MudSelectItem>
+            </MudSelect>
+
+            @if (Connection.AuthMethod == AuthMethod.Password)
+            {
+                <MudTextField @bind-Value="_password" Label="Password"
+                              InputType="InputType.Password"
+                              Required="true" RequiredError="Password is required"
+                              Variant="Variant.Outlined" Class="mb-3" />
+            }
+            else
+            {
+                <MudTextField @bind-Value="_privateKey" Label="Private Key"
+                              Placeholder="Paste your private key (PEM format) or upload below"
+                              Lines="6"
+                              Variant="Variant.Outlined" Class="mb-3"
+                              Style="font-family: monospace; font-size: 0.8rem;" />
+
+                <MudFileUpload T="IBrowserFile" Accept=".pem,.key,.id_rsa,.id_ed25519,*"
+                               FilesChanged="OnKeyFileSelected"
+                               Hidden="false"
+                               Class="mb-3">
+                    <CustomContent>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Default"
+                                   OnClick="@context.OpenFilePickerAsync"
+                                   StartIcon="@Icons.Material.Filled.UploadFile"
+                                   Size="Size.Small">
+                            Upload Key File
+                        </MudButton>
+                    </CustomContent>
+                </MudFileUpload>
+
+                @if (Connection.AuthMethod == AuthMethod.KeyAndPassphrase)
+                {
+                    <MudTextField @bind-Value="_passphrase" Label="Key Passphrase"
+                                  InputType="InputType.Password"
+                                  Variant="Variant.Outlined" Class="mb-3" />
+                }
+            }
 
             <MudTextField @bind-Value="Connection.DefaultPath" Label="Default Path"
                           Placeholder="~ (home directory)"
@@ -58,17 +97,38 @@
     [Parameter] public SavedConnection Connection { get; set; } = new();
     [Parameter] public bool IsNew { get; set; }
     [Parameter] public string ExistingPassword { get; set; } = string.Empty;
+    [Parameter] public string ExistingPrivateKey { get; set; } = string.Empty;
+    [Parameter] public string ExistingPassphrase { get; set; } = string.Empty;
 
     private MudForm _form = null!;
     private string _password = string.Empty;
+    private string _privateKey = string.Empty;
+    private string _passphrase = string.Empty;
     private bool _connectNow = true;
     private bool _saveCredentials = true;
 
     protected override void OnParametersSet()
     {
         _password = ExistingPassword;
-        // Default to saving credentials unless the user explicitly unchecks
+        _privateKey = ExistingPrivateKey;
+        _passphrase = ExistingPassphrase;
         _saveCredentials = true;
+    }
+
+    private async Task OnKeyFileSelected(IBrowserFile file)
+    {
+        try
+        {
+            // Read up to 32KB (private keys are small)
+            using var stream = file.OpenReadStream(maxAllowedSize: 32 * 1024);
+            using var reader = new System.IO.StreamReader(stream);
+            _privateKey = await reader.ReadToEndAsync();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to read key file: {ex.Message}", Severity.Error);
+        }
     }
 
     private async Task Submit()
@@ -77,10 +137,24 @@
         if (!_form.IsValid)
             return;
 
+        // Validate auth-specific fields
+        if (Connection.AuthMethod == AuthMethod.Password && string.IsNullOrWhiteSpace(_password))
+        {
+            Snackbar.Add("Password is required", Severity.Warning);
+            return;
+        }
+
+        if (Connection.AuthMethod != AuthMethod.Password && string.IsNullOrWhiteSpace(_privateKey))
+        {
+            Snackbar.Add("Private key is required", Severity.Warning);
+            return;
+        }
+
         var result = new ConnectionFormResult
         {
             Connection = Connection,
-            Password = _password,
+            Password = Connection.AuthMethod == AuthMethod.Password ? _password : _passphrase,
+            PrivateKey = Connection.AuthMethod != AuthMethod.Password ? _privateKey : string.Empty,
             ConnectNow = IsNew ? _connectNow : false,
             SaveCredentials = _saveCredentials
         };
@@ -94,6 +168,7 @@
         {
             Connection = Connection,
             Password = string.Empty,
+            PrivateKey = string.Empty,
             ConnectNow = false,
             SaveCredentials = false
         }));

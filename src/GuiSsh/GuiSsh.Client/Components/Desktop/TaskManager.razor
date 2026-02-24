@@ -1,0 +1,641 @@
+@inject ISshService SshService
+@inject ShellCommandBuilder CommandBuilder
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div @ref="_containerRef" style="display: flex; flex-direction: column; height: 100%; overflow: hidden;">
+    @* System overview bar *@
+    <div style="display: flex; gap: 12px; padding: 10px 14px; background: var(--surface-dim);
+                border-bottom: 1px solid var(--surface-container); flex-shrink: 0; flex-wrap: wrap;">
+        <div class="tm-stat">
+            <MudIcon Icon="@Icons.Material.Filled.Memory" Size="Size.Small" Color="Color.Primary" />
+            <div>
+                <div class="tm-stat-label">CPU</div>
+                <div class="tm-stat-value">@_cpuUsage</div>
+            </div>
+        </div>
+        <div class="tm-stat">
+            <MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Small" Color="Color.Success" />
+            <div>
+                <div class="tm-stat-label">Memory</div>
+                <div class="tm-stat-value">@_memUsage</div>
+            </div>
+        </div>
+        <div class="tm-stat">
+            <MudIcon Icon="@Icons.Material.Filled.SwapVert" Size="Size.Small" Color="Color.Warning" />
+            <div>
+                <div class="tm-stat-label">Swap</div>
+                <div class="tm-stat-value">@_swapUsage</div>
+            </div>
+        </div>
+        <div class="tm-stat">
+            <MudIcon Icon="@Icons.Material.Filled.Schedule" Size="Size.Small" Color="Color.Secondary" />
+            <div>
+                <div class="tm-stat-label">Uptime</div>
+                <div class="tm-stat-value">@_uptime</div>
+            </div>
+        </div>
+        <div class="tm-stat">
+            <MudIcon Icon="@Icons.Material.Filled.List" Size="Size.Small" Color="Color.Info" />
+            <div>
+                <div class="tm-stat-label">Processes</div>
+                <div class="tm-stat-value">@_processes.Count</div>
+            </div>
+        </div>
+    </div>
+
+    @* Toolbar *@
+    <div style="display: flex; align-items: center; gap: 6px; padding: 6px 14px;
+                background: var(--surface-dim); border-bottom: 1px solid var(--surface-container); flex-shrink: 0;">
+        <MudTextField @bind-Value="_filter" Placeholder="Filter processes..." Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Immediate="true" Clearable="true"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Style="font-size: 0.8rem; max-width: 250px;" />
+        <MudSpacer />
+        @if (_autoRefresh)
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text"
+                     Style="cursor: pointer;" OnClick="ToggleAutoRefresh">
+                Auto 5s
+            </MudChip>
+        }
+        else
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined"
+                     Style="cursor: pointer;" OnClick="ToggleAutoRefresh">
+                Paused
+            </MudChip>
+        }
+        <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small"
+                       Color="Color.Primary" OnClick="Refresh" Disabled="@_loading" />
+    </div>
+
+    @* Process list *@
+    <div style="flex: 1; overflow: auto; min-height: 0;">
+        @if (_loading && _processes.Count == 0)
+        {
+            <div style="display: flex; justify-content: center; padding: 32px;">
+                <MudProgressCircular Indeterminate="true" Size="Size.Medium" />
+            </div>
+        }
+        else if (_isCompact)
+        {
+            @* Compact card view for narrow windows *@
+            <div style="padding: 6px;">
+                @foreach (var proc in GetFilteredProcesses())
+                {
+                    var p = proc;
+                    var isExpanded = _expandedPid == p.Pid;
+                    <div class="tm-proc-card @(isExpanded ? "expanded" : "")" @onclick="() => ToggleExpand(p.Pid)">
+                        <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
+                            <span style="font-family: monospace; font-size: 0.75rem; color: var(--on-surface-muted); min-width: 48px;">@p.Pid</span>
+                            <span style="font-size: 0.8rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                                         font-family: monospace;">@p.Command</span>
+                            <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                                <MudProgressLinear Value="@p.CpuPercent" Max="100" Color="@GetCpuColor(p.CpuPercent)"
+                                                   Style="width: 32px; height: 4px;" />
+                                <span style="font-size: 0.7rem; font-family: monospace; min-width: 32px;">@p.CpuPercent.ToString("F0")%</span>
+                            </div>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                           Color="Color.Error" OnClick="@(() => KillProcess(p))"
+                                           Style="padding: 2px;" />
+                        </div>
+                        @if (isExpanded)
+                        {
+                            <div class="tm-proc-detail" @onclick:stopPropagation="true">
+                                <div class="tm-detail-row">
+                                    <span class="tm-detail-label">User</span>
+                                    <span>@p.User</span>
+                                </div>
+                                <div class="tm-detail-row">
+                                    <span class="tm-detail-label">CPU</span>
+                                    <div style="display: flex; align-items: center; gap: 6px;">
+                                        <MudProgressLinear Value="@p.CpuPercent" Max="100" Color="@GetCpuColor(p.CpuPercent)"
+                                                           Style="width: 80px; height: 6px;" />
+                                        <span style="font-family: monospace;">@p.CpuPercent.ToString("F1")%</span>
+                                    </div>
+                                </div>
+                                <div class="tm-detail-row">
+                                    <span class="tm-detail-label">Memory</span>
+                                    <div style="display: flex; align-items: center; gap: 6px;">
+                                        <MudProgressLinear Value="@p.MemPercent" Max="100" Color="@GetMemColor(p.MemPercent)"
+                                                           Style="width: 80px; height: 6px;" />
+                                        <span style="font-family: monospace;">@p.MemPercent.ToString("F1")%</span>
+                                    </div>
+                                </div>
+                                <div class="tm-detail-row">
+                                    <span class="tm-detail-label">RSS</span>
+                                    <span style="font-family: monospace;">@FormatKb(p.Rss)</span>
+                                </div>
+                                <div class="tm-detail-row">
+                                    <span class="tm-detail-label">Command</span>
+                                    <span style="font-family: monospace; font-size: 0.78rem; word-break: break-all;">@p.Command</span>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            @* Full table view for wide windows *@
+            <MudTable Items="@GetFilteredProcesses()" Dense="true" Hover="true" FixedHeader="true"
+                      Height="100%" SortLabel="Sort" Breakpoint="Breakpoint.None"
+                      Style="background: transparent;">
+                <HeaderContent>
+                    <MudTh><MudTableSortLabel SortBy="new Func<ProcessInfo, object>(x => x.Pid)">PID</MudTableSortLabel></MudTh>
+                    <MudTh><MudTableSortLabel SortBy="new Func<ProcessInfo, object>(x => x.User)">User</MudTableSortLabel></MudTh>
+                    <MudTh><MudTableSortLabel InitialDirection="SortDirection.Descending" SortBy="new Func<ProcessInfo, object>(x => x.CpuPercent)">CPU%</MudTableSortLabel></MudTh>
+                    <MudTh><MudTableSortLabel SortBy="new Func<ProcessInfo, object>(x => x.MemPercent)">MEM%</MudTableSortLabel></MudTh>
+                    <MudTh><MudTableSortLabel SortBy="new Func<ProcessInfo, object>(x => x.Rss)">RSS</MudTableSortLabel></MudTh>
+                    <MudTh>Command</MudTh>
+                    <MudTh Style="width: 48px;"></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="PID" Style="font-family: monospace; font-size: 0.8rem;">@context.Pid</MudTd>
+                    <MudTd DataLabel="User" Style="font-size: 0.8rem;">@context.User</MudTd>
+                    <MudTd DataLabel="CPU%">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <MudProgressLinear Value="@context.CpuPercent" Max="100"
+                                               Color="@GetCpuColor(context.CpuPercent)"
+                                               Style="width: 50px; height: 6px;" />
+                            <span style="font-size: 0.78rem; font-family: monospace; min-width: 40px;">@context.CpuPercent.ToString("F1")%</span>
+                        </div>
+                    </MudTd>
+                    <MudTd DataLabel="MEM%">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <MudProgressLinear Value="@context.MemPercent" Max="100"
+                                               Color="@GetMemColor(context.MemPercent)"
+                                               Style="width: 50px; height: 6px;" />
+                            <span style="font-size: 0.78rem; font-family: monospace; min-width: 40px;">@context.MemPercent.ToString("F1")%</span>
+                        </div>
+                    </MudTd>
+                    <MudTd DataLabel="RSS" Style="font-family: monospace; font-size: 0.78rem;">@FormatKb(context.Rss)</MudTd>
+                    <MudTd DataLabel="Command">
+                        <span style="font-size: 0.78rem; font-family: monospace; white-space: nowrap;
+                                     overflow: hidden; text-overflow: ellipsis; display: block; max-width: 280px;">
+                            @context.Command
+                        </span>
+                    </MudTd>
+                    <MudTd>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                       Color="Color.Error" OnClick="@(() => KillProcess(context))" />
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+
+    private ElementReference _containerRef;
+    private List<ProcessInfo> _processes = new();
+    private string _cpuUsage = "—";
+    private string _memUsage = "—";
+    private string _swapUsage = "—";
+    private string _uptime = "—";
+    private string _filter = string.Empty;
+    private bool _loading = false;
+    private bool _autoRefresh = true;
+    private bool _isCompact = false;
+    private int? _expandedPid;
+    private Timer? _timer;
+    private DotNetObjectReference<TaskManager>? _dotNetRef;
+    private bool _disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Refresh();
+        _timer = new Timer(async _ =>
+        {
+            if (_autoRefresh && !_loading)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await Refresh();
+                    StateHasChanged();
+                });
+            }
+        }, null, 5000, 5000);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            try
+            {
+                await JS.InvokeVoidAsync("GuiSsh.observeResize", _containerRef, _dotNetRef, "OnWidthChanged");
+            }
+            catch { /* Element may not be in DOM yet */ }
+        }
+    }
+
+    [JSInvokable]
+    public void OnWidthChanged(double width)
+    {
+        if (_disposed) return;
+        var wasCompact = _isCompact;
+        _isCompact = width < 600;
+        if (wasCompact != _isCompact)
+        {
+            _expandedPid = null;
+            _ = InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ToggleExpand(int pid)
+    {
+        _expandedPid = _expandedPid == pid ? null : pid;
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        _autoRefresh = !_autoRefresh;
+    }
+
+    private async Task Refresh()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            // Run separate commands to avoid separator strings appearing in ps output
+            // and to handle each independently
+            var psCmd = "ps aux --no-headers 2>/dev/null || ps aux | tail -n +2";
+            var statsCmd = "echo 'UPTIME:'; cat /proc/uptime 2>/dev/null || uptime 2>/dev/null; " +
+                           "echo 'MEMORY:'; free -b 2>/dev/null || cat /proc/meminfo 2>/dev/null || (echo 'VMSTAT:' && vm_stat 2>/dev/null && echo 'HWMEM:' && sysctl -n hw.memsize 2>/dev/null)";
+
+            var psTask = SshService.ExecuteAsync(SessionId, psCmd);
+            var statsTask = SshService.ExecuteAsync(SessionId, statsCmd);
+
+            await Task.WhenAll(psTask, statsTask);
+
+            var psResult = psTask.Result;
+            var statsResult = statsTask.Result;
+
+            if (psResult.Success)
+                ParseProcesses(psResult.StdOut);
+
+            if (statsResult.Success)
+                ParseStats(statsResult.StdOut);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Task Manager refresh failed: {ex.Message}", Severity.Error);
+        }
+
+        _loading = false;
+        StateHasChanged();
+    }
+
+    private void ParseStats(string output)
+    {
+        var lines = output.Split('\n');
+        var section = "";
+        var uptimeLines = new List<string>();
+        var memoryLines = new List<string>();
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line == "UPTIME:")
+            {
+                section = "uptime";
+                continue;
+            }
+            if (line == "MEMORY:")
+            {
+                section = "memory";
+                continue;
+            }
+            if (line == "VMSTAT:")
+            {
+                section = "vmstat";
+                continue;
+            }
+            if (line == "HWMEM:")
+            {
+                section = "hwmem";
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            switch (section)
+            {
+                case "uptime":
+                    uptimeLines.Add(line);
+                    break;
+                case "memory":
+                case "vmstat":
+                case "hwmem":
+                    memoryLines.Add(line);
+                    break;
+            }
+        }
+
+        if (uptimeLines.Count > 0)
+            ParseUptime(string.Join('\n', uptimeLines));
+        if (memoryLines.Count > 0)
+            ParseMemory(string.Join('\n', memoryLines));
+    }
+
+    private void ParseProcesses(string output)
+    {
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var procs = new List<ProcessInfo>();
+        double totalCpu = 0;
+
+        foreach (var line in lines)
+        {
+            var parts = line.Split((char[]?)null, 11, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 11) continue;
+
+            if (int.TryParse(parts[1], out var pid) &&
+                double.TryParse(parts[2], System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out var cpu) &&
+                double.TryParse(parts[3], System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out var mem) &&
+                long.TryParse(parts[5], out var rss))
+            {
+                procs.Add(new ProcessInfo
+                {
+                    User = parts[0],
+                    Pid = pid,
+                    CpuPercent = cpu,
+                    MemPercent = mem,
+                    Rss = rss,
+                    Command = parts[10]
+                });
+                totalCpu += cpu;
+            }
+        }
+
+        _processes = procs;
+        _cpuUsage = $"{totalCpu:F1}%";
+    }
+
+    private void ParseUptime(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            _uptime = "—";
+            return;
+        }
+
+        // Try /proc/uptime format first: "12345.67 98765.43"
+        var firstLine = output.Split('\n')[0].Trim();
+        var uptimeParts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (uptimeParts.Length >= 1 &&
+            double.TryParse(uptimeParts[0], System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var totalSeconds))
+        {
+            var ts = TimeSpan.FromSeconds(totalSeconds);
+            if (ts.Days > 0)
+                _uptime = $"{ts.Days}d {ts.Hours}h {ts.Minutes}m";
+            else if (ts.Hours > 0)
+                _uptime = $"{ts.Hours}h {ts.Minutes}m";
+            else
+                _uptime = $"{ts.Minutes}m";
+            return;
+        }
+
+        // Fall back to parsing `uptime` command output
+        var upIdx = output.IndexOf("up ", StringComparison.OrdinalIgnoreCase);
+        if (upIdx >= 0)
+        {
+            var rest = output[(upIdx + 3)..];
+            var userIdx = rest.IndexOf(" user", StringComparison.OrdinalIgnoreCase);
+            if (userIdx > 0)
+            {
+                var commaIdx = rest.LastIndexOf(',', userIdx);
+                _uptime = (commaIdx > 0 ? rest[..commaIdx] : rest[..userIdx]).Trim().TrimEnd(',');
+            }
+            else
+            {
+                _uptime = rest.Split(',')[0].Trim();
+            }
+        }
+    }
+
+    private void ParseMemory(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+            return;
+
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        // Try Linux "free -b" format (bytes for precision)
+        // Lines look like:
+        //               total        used        free      shared  buff/cache   available
+        // Mem:     8340398080  3456789504  1234567890   123456789  3649041686  4597899264
+        // Swap:    2147483648           0  2147483648
+        bool foundMem = false;
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith("Mem:", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                // parts[0]="Mem:", parts[1]=total, parts[2]=used, ...
+                if (parts.Length >= 3 &&
+                    long.TryParse(parts[1], out var totalBytes) &&
+                    long.TryParse(parts[2], out var usedBytes))
+                {
+                    _memUsage = $"{FormatBytes(usedBytes)} / {FormatBytes(totalBytes)}";
+                    foundMem = true;
+                }
+            }
+            else if (line.StartsWith("Swap:", StringComparison.OrdinalIgnoreCase) ||
+                     line.StartsWith("swap:", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 3 &&
+                    long.TryParse(parts[1], out var totalBytes) &&
+                    long.TryParse(parts[2], out var usedBytes))
+                {
+                    _swapUsage = totalBytes == 0 ? "None" : $"{FormatBytes(usedBytes)} / {FormatBytes(totalBytes)}";
+                }
+                else
+                {
+                    _swapUsage = "None";
+                }
+            }
+        }
+
+        if (foundMem)
+            return;
+
+        // Try /proc/meminfo fallback (some minimal systems don't have 'free')
+        long memTotal = 0, memAvailable = 0, memFree = 0, swapTotal = 0, swapFree = 0;
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith("MemTotal:", StringComparison.OrdinalIgnoreCase))
+                memTotal = ParseProcMemValue(line);
+            else if (line.StartsWith("MemAvailable:", StringComparison.OrdinalIgnoreCase))
+                memAvailable = ParseProcMemValue(line);
+            else if (line.StartsWith("MemFree:", StringComparison.OrdinalIgnoreCase))
+                memFree = ParseProcMemValue(line);
+            else if (line.StartsWith("SwapTotal:", StringComparison.OrdinalIgnoreCase))
+                swapTotal = ParseProcMemValue(line);
+            else if (line.StartsWith("SwapFree:", StringComparison.OrdinalIgnoreCase))
+                swapFree = ParseProcMemValue(line);
+        }
+        if (memTotal > 0)
+        {
+            var used = memTotal - (memAvailable > 0 ? memAvailable : memFree);
+            _memUsage = $"{FormatBytes(used * 1024)} / {FormatBytes(memTotal * 1024)}";
+            _swapUsage = swapTotal == 0 ? "None" : $"{FormatBytes((swapTotal - swapFree) * 1024)} / {FormatBytes(swapTotal * 1024)}";
+            return;
+        }
+
+        // macOS: parse vm_stat + sysctl hw.memsize
+        long pageSize = 4096;
+        long pagesActive = 0, pagesWired = 0, pagesCompressed = 0, pagesFree = 0, pagesSpeculative = 0;
+        long totalMem = 0;
+
+        foreach (var line in lines)
+        {
+            if (line.Contains("page size of", StringComparison.OrdinalIgnoreCase))
+            {
+                // "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+                var match = System.Text.RegularExpressions.Regex.Match(line, @"page size of (\d+)");
+                if (match.Success) pageSize = long.Parse(match.Groups[1].Value);
+            }
+            else if (line.StartsWith("Pages active:", StringComparison.OrdinalIgnoreCase))
+                TryParseVmStatValue(line, out pagesActive);
+            else if (line.StartsWith("Pages wired down:", StringComparison.OrdinalIgnoreCase))
+                TryParseVmStatValue(line, out pagesWired);
+            else if (line.StartsWith("Pages occupied by compressor:", StringComparison.OrdinalIgnoreCase))
+                TryParseVmStatValue(line, out pagesCompressed);
+            else if (line.StartsWith("Pages free:", StringComparison.OrdinalIgnoreCase))
+                TryParseVmStatValue(line, out pagesFree);
+            else if (line.StartsWith("Pages speculative:", StringComparison.OrdinalIgnoreCase))
+                TryParseVmStatValue(line, out pagesSpeculative);
+            else if (line.StartsWith("Swapins:", StringComparison.OrdinalIgnoreCase) ||
+                     line.StartsWith("Swapouts:", StringComparison.OrdinalIgnoreCase))
+            {
+                // Rough swap estimate
+            }
+            else if (long.TryParse(line.Trim(), out var hwMem))
+            {
+                // sysctl -n hw.memsize output (just a number)
+                totalMem = hwMem;
+            }
+        }
+
+        if (totalMem > 0)
+        {
+            var usedMem = (pagesActive + pagesWired + pagesCompressed) * pageSize;
+            _memUsage = $"{FormatBytes(usedMem)} / {FormatBytes(totalMem)}";
+        }
+
+        if (_swapUsage == "—")
+            _swapUsage = "N/A";
+    }
+
+    private static void TryParseVmStatValue(string line, out long value)
+    {
+        value = 0;
+        var colonIdx = line.IndexOf(':');
+        if (colonIdx < 0) return;
+        var numStr = line[(colonIdx + 1)..].Trim().TrimEnd('.');
+        long.TryParse(numStr, out value);
+    }
+
+    /// <summary>Parse a /proc/meminfo line like "MemTotal:       16384000 kB" → returns 16384000</summary>
+    private static long ParseProcMemValue(string line)
+    {
+        var colonIdx = line.IndexOf(':');
+        if (colonIdx < 0) return 0;
+        var rest = line[(colonIdx + 1)..].Trim();
+        // Strip trailing "kB" or "KB"
+        var numStr = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        return long.TryParse(numStr, out var val) ? val : 0;
+    }
+
+    private IEnumerable<ProcessInfo> GetFilteredProcesses()
+    {
+        if (string.IsNullOrWhiteSpace(_filter))
+            return _processes;
+
+        var f = _filter.Trim();
+        return _processes.Where(p =>
+            p.Command.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            p.User.Contains(f, StringComparison.OrdinalIgnoreCase) ||
+            p.Pid.ToString().Contains(f));
+    }
+
+    private async Task KillProcess(ProcessInfo proc)
+    {
+        var cmd = $"kill {proc.Pid} 2>&1";
+        var result = await SshService.ExecuteAsync(SessionId, cmd);
+
+        if (result.Success && string.IsNullOrWhiteSpace(result.StdErr))
+        {
+            Snackbar.Add($"Sent SIGTERM to PID {proc.Pid}", Severity.Success);
+            _processes.RemoveAll(p => p.Pid == proc.Pid);
+        }
+        else
+        {
+            var msg = !string.IsNullOrWhiteSpace(result.StdErr) ? result.StdErr.Trim() :
+                      !string.IsNullOrWhiteSpace(result.StdOut) ? result.StdOut.Trim() :
+                      "Unknown error";
+            Snackbar.Add($"Kill failed: {msg}", Severity.Error);
+        }
+    }
+
+    private static Color GetCpuColor(double pct) => pct switch
+    {
+        > 80 => Color.Error,
+        > 40 => Color.Warning,
+        _ => Color.Primary
+    };
+
+    private static Color GetMemColor(double pct) => pct switch
+    {
+        > 80 => Color.Error,
+        > 50 => Color.Warning,
+        _ => Color.Success
+    };
+
+    private static string FormatKb(long kb)
+    {
+        if (kb < 1024) return $"{kb} KB";
+        if (kb < 1024 * 1024) return $"{kb / 1024.0:F1} MB";
+        return $"{kb / (1024.0 * 1024):F1} GB";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F0} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _timer?.Dispose();
+        _dotNetRef?.Dispose();
+    }
+
+    private class ProcessInfo
+    {
+        public string User { get; set; } = string.Empty;
+        public int Pid { get; set; }
+        public double CpuPercent { get; set; }
+        public double MemPercent { get; set; }
+        public long Rss { get; set; }
+        public string Command { get; set; } = string.Empty;
+    }
+}

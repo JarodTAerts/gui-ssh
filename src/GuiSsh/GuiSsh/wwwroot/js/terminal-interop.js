@@ -27,7 +27,7 @@ export async function createTerminal(elementId, dotnetRef) {
         fontSize: 14,
         fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, Monaco, monospace',
         theme: {
-            background: '#1e1e2e',
+            background: '#11111b',
             foreground: '#cdd6f4',
             cursor: '#f5e0dc',
             selectionBackground: '#45475a',

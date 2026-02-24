@@ -1,7 +1,29 @@
 <div style="position: absolute; bottom: 0; left: 0; right: 0;
-            height: 40px; background: #11111b; border-top: 1px solid #313244;
+            height: 40px; background: var(--surface-dim); border-top: 1px solid var(--surface-container);
             display: flex; align-items: center; padding: 0 8px; gap: 4px; z-index: 9999;">
 
+    @* Start button *@
+    <MudMenu Icon="@Icons.Material.Filled.Apps" Size="Size.Small" Dense="true"
+             Color="Color.Primary" Variant="Variant.Filled"
+             AnchorOrigin="Origin.TopLeft" TransformOrigin="Origin.BottomLeft"
+             Class="start-menu-btn">
+        <MudMenuItem Icon="@Icons.Material.Filled.Folder"
+                     OnClick="OnNewFileManager">
+            File Manager
+        </MudMenuItem>
+        <MudMenuItem Icon="@Icons.Material.Filled.EditNote"
+                     OnClick="OnNewTextEditor">
+            Text Editor
+        </MudMenuItem>
+        <MudMenuItem Icon="@Icons.Material.Filled.MonitorHeart"
+                     OnClick="OnNewTaskManager">
+            Task Manager
+        </MudMenuItem>
+    </MudMenu>
+
+    <MudDivider Vertical="true" FlexItem="true" Class="mx-1" Style="height: 24px;" />
+
+    @* Window buttons *@
     @foreach (var window in Windows)
     {
         var isActive = !window.IsMinimized;
@@ -17,15 +39,14 @@
     }
 
     <MudSpacer />
-
-    <MudIconButton Icon="@Icons.Material.Filled.CreateNewFolder" Size="Size.Small"
-                   Color="Color.Primary" OnClick="OnNewFileManager" />
 </div>
 
 @code {
     [Parameter] public List<DesktopWindowState> Windows { get; set; } = new();
     [Parameter] public EventCallback<DesktopWindowState> OnWindowClick { get; set; }
     [Parameter] public EventCallback OnNewFileManager { get; set; }
+    [Parameter] public EventCallback OnNewTextEditor { get; set; }
+    [Parameter] public EventCallback OnNewTaskManager { get; set; }
 
     private string GetDisplayTitle(DesktopWindowState window)
     {
@@ -51,6 +72,8 @@
         WindowType.FileManager => Icons.Material.Filled.Folder,
         WindowType.Editor => Icons.Material.Filled.EditNote,
         WindowType.ImageViewer => Icons.Material.Filled.Image,
+        WindowType.Info => Icons.Material.Filled.Info,
+        WindowType.TaskManager => Icons.Material.Filled.MonitorHeart,
         _ => Icons.Material.Filled.Window
     };
 }

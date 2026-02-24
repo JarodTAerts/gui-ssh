@@ -1,4 +1,45 @@
-/* GUI-SSH Global Styles */
+/* GUI-SSH Global Styles — Theme Variables */
+
+:root {
+    --surface-base: #1e1e2e;
+    --surface-dim: #181825;
+    --surface-inset: #11111b;
+    --surface-container: #313244;
+    --surface-bright: #45475a;
+    --on-surface: #cdd6f4;
+    --on-surface-muted: #a6adc8;
+    --on-surface-faint: #585b70;
+    --primary: #89b4fa;
+    --primary-hover: rgba(137, 180, 250, 0.15);
+    --primary-faint: rgba(137, 180, 250, 0.08);
+    --success: #a6e3a1;
+    --error: #f38ba8;
+    --accent-hover: rgba(69, 71, 90, 0.4);
+    --accent-active: rgba(69, 71, 90, 0.6);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.5);
+    --border-radius: 8px;
+}
+
+[data-theme="light"] {
+    --surface-base: #eff1f5;
+    --surface-dim: #e6e9ef;
+    --surface-inset: #ccd0da;
+    --surface-container: #dce0e8;
+    --surface-bright: #bcc0cc;
+    --on-surface: #4c4f69;
+    --on-surface-muted: #6c6f85;
+    --on-surface-faint: #9ca0b0;
+    --primary: #1e66f5;
+    --primary-hover: rgba(30, 102, 245, 0.12);
+    --primary-faint: rgba(30, 102, 245, 0.06);
+    --success: #40a02b;
+    --error: #d20f39;
+    --accent-hover: rgba(172, 176, 190, 0.35);
+    --accent-active: rgba(172, 176, 190, 0.55);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.1);
+}
 
 html, body {
     margin: 0;
@@ -6,8 +47,9 @@ html, body {
     height: 100vh;
     overflow: hidden;
     font-family: 'Roboto', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    background: #1e1e2e;
-    color: #cdd6f4;
+    background: var(--surface-base);
+    color: var(--on-surface);
+    transition: background 0.25s ease, color 0.25s ease;
 }
 
 /* Desktop file entry */
@@ -20,25 +62,42 @@ html, body {
     cursor: pointer;
     user-select: none;
     align-self: flex-start;
-    transition: background 0.1s ease;
+    transition: background 0.1s ease, outline 0.1s ease, transform 0.1s ease;
+    position: relative;
+}
+
+/* Block pointer events on children during any drag so the parent
+   gets clean dragover/dragleave without flicker */
+.file-list.dragging-active .file-entry > * {
+    pointer-events: none;
 }
 
 .file-entry:hover {
-    background: rgba(69, 71, 90, 0.4);
+    background: var(--accent-hover);
 }
 
 .file-entry:active {
-    background: rgba(69, 71, 90, 0.6);
+    background: var(--accent-active);
 }
 
 .file-entry.selected {
-    background: rgba(137, 180, 250, 0.15);
-    outline: 1px solid rgba(137, 180, 250, 0.4);
+    background: var(--primary-hover);
+    outline: 1px solid var(--primary);
 }
 
 .file-entry.drag-over {
-    background: rgba(166, 227, 161, 0.2);
-    outline: 2px dashed #a6e3a1;
+    background: rgba(166, 227, 161, 0.25);
+    outline: 2px dashed var(--success);
+    transform: scale(1.05);
+    z-index: 2;
+}
+
+/* Expand the drag hit area around folder entries during active drag */
+.file-list.dragging-active .file-entry.is-folder::after {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    z-index: 1;
 }
 
 .file-entry.dragging {
@@ -55,6 +114,13 @@ html, body {
     overflow-y: auto;
     flex: 1;
     min-height: 0;
+    transition: border-color 0.2s, background 0.2s;
+    border: 2px dashed transparent;
+}
+
+.file-list.drop-active {
+    border-color: var(--primary);
+    background: var(--primary-faint);
 }
 
 /* Window resize handles */
@@ -87,12 +153,12 @@ html, body {
 
 .context-menu {
     position: fixed;
-    background: #313244;
-    border: 1px solid #45475a;
+    background: var(--surface-container);
+    border: 1px solid var(--surface-bright);
     border-radius: 6px;
     padding: 4px 0;
     min-width: 180px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow-md);
     z-index: 10001;
 }
 
@@ -102,7 +168,7 @@ html, body {
     gap: 10px;
     padding: 8px 14px;
     cursor: pointer;
-    color: #cdd6f4;
+    color: var(--on-surface);
     font-size: 0.85rem;
     font-family: inherit;
     border: none;
@@ -112,16 +178,16 @@ html, body {
 }
 
 .context-menu-item:hover {
-    background: rgba(69, 71, 90, 0.5);
+    background: var(--accent-hover);
 }
 
 .context-menu-item.danger {
-    color: #f38ba8;
+    color: var(--error);
 }
 
 .context-menu-divider {
     height: 1px;
-    background: #45475a;
+    background: var(--surface-bright);
     margin: 4px 0;
 }
 
@@ -145,9 +211,9 @@ html, body {
     overflow-y: auto !important;
 }
 
-/* MudBlazor dark theme overrides */
+/* MudBlazor theme overrides */
 .mud-breadcrumbs .mud-breadcrumb-separator {
-    color: #585b70;
+    color: var(--on-surface-faint);
 }
 
 /* Session tab bar */
@@ -160,8 +226,8 @@ html, body {
 
 .session-tabs-bar {
     display: flex;
-    background: #181825;
-    border-bottom: 1px solid #313244;
+    background: var(--surface-dim);
+    border-bottom: 1px solid var(--surface-container);
     flex-shrink: 0;
     z-index: 1;
 }
@@ -173,7 +239,7 @@ html, body {
     padding: 8px 20px;
     border: none;
     background: transparent;
-    color: #a6adc8;
+    color: var(--on-surface-muted);
     cursor: pointer;
     font-size: 0.875rem;
     font-family: inherit;
@@ -182,14 +248,14 @@ html, body {
 }
 
 .session-tab:hover {
-    background: rgba(69, 71, 90, 0.3);
-    color: #cdd6f4;
+    background: var(--accent-hover);
+    color: var(--on-surface);
 }
 
 .session-tab.active {
-    color: #89b4fa;
-    border-bottom-color: #89b4fa;
-    background: rgba(137, 180, 250, 0.08);
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    background: var(--primary-faint);
 }
 
 .session-tabs-content {
@@ -203,4 +269,272 @@ html, body {
     padding-top: 48px !important; /* dense AppBar height */
     height: 100vh !important;
     box-sizing: border-box;
+}
+
+/* ===== Sidebar Connection Cards ===== */
+
+.conn-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 10px;
+}
+
+.conn-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 6px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.conn-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+    position: relative;
+    border: 1px solid transparent;
+    min-height: 44px;
+}
+
+.conn-card:hover {
+    background: var(--accent-hover);
+}
+
+.conn-card.active {
+    background: var(--primary-hover);
+    border-color: var(--primary);
+}
+
+.conn-card.connecting {
+    opacity: 0.85;
+}
+
+.conn-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--on-surface-faint);
+    transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+
+.conn-status-dot.connected {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+}
+
+.conn-status-dot.connecting {
+    background: var(--primary);
+    animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
+.conn-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    overflow: hidden;
+}
+
+.conn-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--on-surface);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.conn-host {
+    font-size: 0.72rem;
+    color: var(--on-surface-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.conn-edit-btn {
+    opacity: 0;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+}
+
+.conn-card:hover .conn-edit-btn {
+    opacity: 1;
+}
+
+/* Mini drawer: hide text, center icon */
+.mud-drawer--mini .conn-info,
+.mud-drawer--mini .conn-edit-btn,
+.mud-drawer--mini .conn-filter-bar .mud-input-control,
+.mud-drawer--mini .conn-host {
+    display: none;
+}
+
+.mud-drawer--mini .conn-card {
+    justify-content: center;
+    padding: 8px;
+}
+
+.mud-drawer--mini .conn-filter-bar {
+    justify-content: center;
+}
+
+/* Avatar for mini mode */
+.conn-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    flex-shrink: 0;
+    color: var(--primary);
+    background: var(--primary-faint);
+    text-transform: uppercase;
+    transition: background 0.15s, color 0.15s;
+}
+
+.conn-card.active .conn-avatar {
+    background: var(--primary);
+    color: #fff;
+}
+
+/* Empty state */
+.conn-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 24px 16px;
+    flex: 1;
+    cursor: pointer;
+    border: 2px dashed var(--surface-bright);
+    border-radius: 12px;
+    margin: 12px 8px;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.conn-empty:hover {
+    border-color: var(--primary);
+    background: var(--primary-faint);
+}
+
+.conn-empty-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--primary-faint);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+
+.conn-empty:hover .conn-empty-icon {
+    background: var(--primary-hover);
+}
+
+.mud-drawer--mini .conn-empty {
+    padding: 12px 4px;
+    margin: 8px 4px;
+}
+
+.mud-drawer--mini .conn-empty-text {
+    display: none;
+}
+}
+
+/* Task Manager stat cards */
+.tm-stat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--accent-hover);
+    min-width: 110px;
+}
+
+.tm-stat-label {
+    font-size: 0.7rem;
+    color: var(--on-surface-muted);
+    line-height: 1;
+}
+
+.tm-stat-value {
+    font-size: 0.82rem;
+    font-weight: 600;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    color: var(--on-surface);
+    line-height: 1.2;
+}
+
+/* Start menu button */
+.start-menu-btn .mud-button-root {
+    min-width: 36px !important;
+    width: 36px;
+    height: 32px;
+    padding: 0;
+    border-radius: 6px;
+}
+
+/* Task Manager compact process cards */
+.tm-proc-card {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 10px;
+    margin-bottom: 2px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s;
+    border: 1px solid transparent;
+}
+
+.tm-proc-card:hover {
+    background: var(--accent-hover);
+}
+
+.tm-proc-card.expanded {
+    background: var(--primary-faint);
+    border-color: var(--surface-bright);
+}
+
+.tm-proc-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 0 4px 56px;
+    margin-top: 6px;
+    border-top: 1px solid var(--surface-container);
+    font-size: 0.82rem;
+}
+
+.tm-detail-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.tm-detail-label {
+    min-width: 56px;
+    font-size: 0.75rem;
+    color: var(--on-surface-muted);
+    font-weight: 600;
 }

@@ -1,0 +1,114 @@
+@* File/folder info panel that runs stat and displays details nicely *@
+@inject ISshService SshService
+@inject ShellCommandBuilder CommandBuilder
+
+<div style="padding: 16px; color: var(--on-surface); height: 100%; overflow-y: auto;">
+    @if (_loading)
+    {
+        <MudProgressCircular Indeterminate="true" Size="Size.Medium" Class="mx-auto my-8" />
+    }
+    else
+    {
+        @* Icon + Name header *@
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--surface-bright);">
+            <MudIcon Icon="@GetIcon()" Size="Size.Large" Color="@GetColor()"
+                     Style="font-size: 3rem;" />
+            <div>
+                <MudText Typo="Typo.h6" Style="word-break: break-all;">@Entry.Name</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@_mimeType</MudText>
+            </div>
+        </div>
+
+        @* Info rows *@
+        <div style="display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; font-size: 0.875rem;">
+            <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Location</MudText>
+            <MudText Typo="Typo.body2" Style="word-break: break-all;">@Entry.FullPath</MudText>
+
+            <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Type</MudText>
+            <MudText Typo="Typo.body2">@_typeLabel</MudText>
+
+            <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Size</MudText>
+            <MudText Typo="Typo.body2">@FormatSize(Entry.Size)</MudText>
+
+            <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Modified</MudText>
+            <MudText Typo="Typo.body2">@Entry.Modified.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+
+            <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Permissions</MudText>
+            <MudText Typo="Typo.body2" Style="font-family: monospace;">@Entry.Permissions</MudText>
+
+            <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Owner</MudText>
+            <MudText Typo="Typo.body2">@Entry.Owner:@Entry.Group</MudText>
+
+            @if (Entry.Type == FileEntryType.Symlink && !string.IsNullOrEmpty(Entry.SymlinkTarget))
+            {
+                <MudText Typo="Typo.body2" Style="color: var(--on-surface-muted); font-weight: 500;">Link target</MudText>
+                <MudText Typo="Typo.body2" Style="word-break: break-all;">@Entry.SymlinkTarget</MudText>
+            }
+        </div>
+
+        @* stat output *@
+        @if (!string.IsNullOrEmpty(_statOutput))
+        {
+            <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2" Color="Color.Secondary">
+                Details
+            </MudText>
+            <div style="background: var(--surface-dim); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; overflow-x: auto; border: 1px solid var(--surface-container); color: var(--on-surface-muted);">@_statOutput</div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+    [Parameter] public FileEntry Entry { get; set; } = new();
+
+    private bool _loading = true;
+    private string _mimeType = "";
+    private string _typeLabel = "";
+    private string _statOutput = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loading = true;
+
+        var typeTask = SshService.ExecuteAsync(SessionId, CommandBuilder.FileType(Entry.FullPath));
+        var statTask = SshService.ExecuteAsync(SessionId, CommandBuilder.GetFileInfo(Entry.FullPath));
+
+        await Task.WhenAll(typeTask, statTask);
+
+        var typeResult = typeTask.Result;
+        var statResult = statTask.Result;
+
+        _mimeType = typeResult.Success ? typeResult.StdOut.Trim() : "";
+        _typeLabel = Entry.Type switch
+        {
+            FileEntryType.Directory => "Folder",
+            FileEntryType.Symlink => "Symbolic Link",
+            _ => !string.IsNullOrEmpty(_mimeType) ? _mimeType : "File"
+        };
+
+        _statOutput = statResult.Success ? statResult.StdOut.Trim() : "";
+        _loading = false;
+    }
+
+    private string GetIcon() => Entry.Type switch
+    {
+        FileEntryType.Directory => Icons.Material.Filled.Folder,
+        FileEntryType.Symlink => Icons.Material.Filled.Link,
+        _ => Icons.Material.Filled.InsertDriveFile
+    };
+
+    private Color GetColor() => Entry.Type switch
+    {
+        FileEntryType.Directory => Color.Warning,
+        FileEntryType.Symlink => Color.Info,
+        _ => Color.Default
+    };
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
+    }
+}

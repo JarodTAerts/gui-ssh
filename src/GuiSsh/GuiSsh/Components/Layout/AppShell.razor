@@ -1,6 +1,7 @@
 @rendermode InteractiveServer
+@inject IJSRuntime JS
 
-<MudThemeProvider IsDarkMode="true" />
+<MudThemeProvider @ref="_themeProvider" Theme="_theme" IsDarkMode="@_isDarkMode" />
 <MudPopoverProvider />
 <MudDialogProvider />
 <MudSnackbarProvider />
@@ -15,13 +16,12 @@
         {
             <MudChip T="string" Color="Color.Success" Size="Size.Small">Connected</MudChip>
         }
+        <MudIconButton Icon="@(_isDarkMode ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+                       Color="Color.Inherit" OnClick="ToggleTheme" />
     </MudAppBar>
 
     <MudDrawer @bind-Open="_drawerOpen" Elevation="2" Variant="DrawerVariant.Mini"
                ClipMode="DrawerClipMode.Always" OpenMiniOnHover="true">
-        <MudDrawerHeader>
-            <MudText Typo="Typo.subtitle1">Connections</MudText>
-        </MudDrawerHeader>
         <Sidebar ActiveSessionId="@_activeSessionId"
                  OnConnected="HandleConnected"
                  OnSessionSelected="HandleSessionSelected" />
@@ -51,8 +51,75 @@
 @code {
     private bool _drawerOpen = true;
     private string? _activeSessionId;
+    private bool _isDarkMode = true;
+    private MudThemeProvider _themeProvider = null!;
+
+    private readonly MudTheme _theme = new()
+    {
+        PaletteLight = new PaletteLight
+        {
+            Primary = "#1e66f5",
+            Secondary = "#6c6f85",
+            Success = "#40a02b",
+            Error = "#d20f39",
+            Warning = "#df8e1d",
+            Info = "#1e66f5",
+            Surface = "#eff1f5",
+            Background = "#eff1f5",
+            AppbarBackground = "#dce0e8",
+            AppbarText = "#4c4f69",
+            DrawerBackground = "#e6e9ef",
+            DrawerText = "#4c4f69",
+            TextPrimary = "#4c4f69",
+            TextSecondary = "#6c6f85"
+        },
+        PaletteDark = new PaletteDark
+        {
+            Primary = "#89b4fa",
+            Secondary = "#a6adc8",
+            Success = "#a6e3a1",
+            Error = "#f38ba8",
+            Warning = "#fab387",
+            Info = "#89dceb",
+            Surface = "#1e1e2e",
+            Background = "#1e1e2e",
+            AppbarBackground = "#181825",
+            AppbarText = "#cdd6f4",
+            DrawerBackground = "#181825",
+            DrawerText = "#cdd6f4",
+            TextPrimary = "#cdd6f4",
+            TextSecondary = "#a6adc8"
+        }
+    };
 
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var saved = await JS.InvokeAsync<string?>("localStorage.getItem", "gui-ssh-theme");
+            if (saved is "light" or "dark")
+            {
+                _isDarkMode = saved == "dark";
+                await ApplyTheme();
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        _isDarkMode = !_isDarkMode;
+        await ApplyTheme();
+        await JS.InvokeVoidAsync("localStorage.setItem", "gui-ssh-theme", _isDarkMode ? "dark" : "light");
+    }
+
+    private async Task ApplyTheme()
+    {
+        await JS.InvokeVoidAsync("eval",
+            $"document.documentElement.setAttribute('data-theme', '{(_isDarkMode ? "dark" : "light")}')");
+    }
 
     private void HandleConnected(string sessionId)
     {
