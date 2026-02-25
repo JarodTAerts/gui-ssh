@@ -228,15 +228,15 @@
     {
         try
         {
-            Snackbar.Add($"Downloading {remotePath.Split('/').Last()}...", Severity.Info);
+            var fileName = remotePath.Split('/').LastOrDefault() ?? remotePath;
+            Snackbar.Add($"Starting download: {fileName}...", Severity.Info);
 
-            var (data, fileName) = await SshService.DownloadFileAsync(sessionId, remotePath);
+            // Use streaming GET endpoint — browser handles the download with native progress bar
+            var encodedPath = Uri.EscapeDataString(remotePath);
+            var url = $"/api/ssh/download/{sessionId}?path={encodedPath}";
 
             await EnsureFileTransferModule();
-            var base64 = Convert.ToBase64String(data);
-            await _fileTransferModule!.InvokeVoidAsync("downloadFile", fileName, base64, "application/octet-stream");
-
-            Snackbar.Add($"Downloaded {fileName}", Severity.Success);
+            await _fileTransferModule!.InvokeVoidAsync("downloadFromUrl", url, fileName);
         }
         catch (Exception ex)
         {

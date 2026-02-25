@@ -232,6 +232,130 @@ public class SshSessionManager : IDisposable
         _logger.LogInformation("Uploaded file to {Path} on session {SessionId}", remotePath, sessionId);
     }
 
+    /// <summary>
+    /// Gets file info (size, whether it's a directory) for a remote path.
+    /// </summary>
+    public async Task<(long Size, bool IsDirectory, string FileName)> GetFileInfoAsync(string sessionId, string remotePath)
+    {
+        var session = GetSession(sessionId);
+        if (session == null || !session.IsConnected)
+            throw new InvalidOperationException("Session not found or disconnected.");
+
+        return await Task.Run(() =>
+        {
+            using var sftp = new SftpClient(session.SshClient.ConnectionInfo);
+            sftp.Connect();
+            try
+            {
+                var attrs = sftp.GetAttributes(remotePath);
+                var fileName = remotePath.TrimEnd('/').Split('/').Last();
+                return (attrs.Size, attrs.IsDirectory, fileName);
+            }
+            finally
+            {
+                sftp.Disconnect();
+            }
+        });
+    }
+
+    /// <summary>
+    /// Streams a file download directly to the output stream without buffering the entire file in memory.
+    /// For directories, creates a tar.gz archive first.
+    /// </summary>
+    public async Task StreamDownloadAsync(string sessionId, string remotePath, Stream outputStream, Action<long>? onProgress = null, CancellationToken cancellationToken = default)
+    {
+        var session = GetSession(sessionId);
+        if (session == null || !session.IsConnected)
+            throw new InvalidOperationException("Session not found or disconnected.");
+
+        // Check if it's a directory
+        var checkResult = await Task.Run(() =>
+        {
+            using var cmd = session.SshClient.RunCommand($"test -d {EscapePath(remotePath)} && echo DIR || echo FILE");
+            return cmd.Result.Trim();
+        }, cancellationToken);
+
+        if (checkResult == "DIR")
+        {
+            await StreamDirectoryDownloadAsync(session, remotePath, outputStream, onProgress, cancellationToken);
+            return;
+        }
+
+        await Task.Run(() =>
+        {
+            using var sftp = new SftpClient(session.SshClient.ConnectionInfo);
+            sftp.OperationTimeout = TimeSpan.FromHours(4); // Allow very long transfers
+            sftp.BufferSize = 1024 * 64; // 64KB buffer for better throughput
+            sftp.Connect();
+            try
+            {
+                sftp.DownloadFile(remotePath, outputStream, bytesDownloaded =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    onProgress?.Invoke((long)bytesDownloaded);
+                });
+            }
+            finally
+            {
+                sftp.Disconnect();
+            }
+        }, cancellationToken);
+
+        session.LastActivity = DateTime.UtcNow;
+    }
+
+    private async Task StreamDirectoryDownloadAsync(ActiveSession session, string remotePath, Stream outputStream, Action<long>? onProgress, CancellationToken cancellationToken = default)
+    {
+        var dirName = remotePath.TrimEnd('/').Split('/').Last();
+        var archiveName = $"/tmp/.guissh_{Guid.NewGuid():N}.tar.gz";
+
+        try
+        {
+            // Create tar.gz on remote
+            var tarResult = await Task.Run(() =>
+            {
+                var parentDir = remotePath[..remotePath.TrimEnd('/').LastIndexOf('/')];
+                if (string.IsNullOrEmpty(parentDir)) parentDir = "/";
+                using var cmd = session.SshClient.RunCommand($"cd {EscapePath(parentDir)} && tar czf {archiveName} {EscapePath(dirName)}");
+                return cmd;
+            }, cancellationToken);
+
+            if (tarResult.ExitStatus != 0)
+                throw new InvalidOperationException($"Failed to archive directory: {tarResult.Error}");
+
+            // Stream the archive via SFTP
+            await Task.Run(() =>
+            {
+                using var sftp = new SftpClient(session.SshClient.ConnectionInfo);
+                sftp.OperationTimeout = TimeSpan.FromHours(4);
+                sftp.BufferSize = 1024 * 64;
+                sftp.Connect();
+                try
+                {
+                    sftp.DownloadFile(archiveName, outputStream, bytesDownloaded =>
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        onProgress?.Invoke((long)bytesDownloaded);
+                    });
+                }
+                finally
+                {
+                    sftp.Disconnect();
+                }
+            }, cancellationToken);
+        }
+        finally
+        {
+            // Clean up remote archive
+            _ = Task.Run(() =>
+            {
+                try { session.SshClient.RunCommand($"rm -f {archiveName}"); } catch { }
+            });
+        }
+
+        session.LastActivity = DateTime.UtcNow;
+    }
+
     private static string EscapePath(string path) => $"'{path.Replace("'", "'\\''")}'";
 
     public Task DisconnectAsync(string sessionId)

@@ -1,4 +1,5 @@
 using GuiSsh.Services;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace GuiSsh;
 
@@ -60,6 +61,57 @@ public static class SshApiEndpoints
             catch (Exception ex)
             {
                 return Results.BadRequest(new { Error = ex.Message });
+            }
+        });
+
+        // Streaming download — browser-native download with Content-Length for progress
+        group.MapGet("/download/{sessionId}", async (string sessionId, string path, HttpContext ctx, SshSessionManager manager, ILogger<SshSessionManager> logger) =>
+        {
+            try
+            {
+                // SSH.NET's DownloadFile uses synchronous Stream.Write — allow it for this endpoint
+                var syncIOFeature = ctx.Features.Get<IHttpBodyControlFeature>();
+                if (syncIOFeature != null)
+                    syncIOFeature.AllowSynchronousIO = true;
+
+                // Disable response buffering for true streaming
+                var bufferingFeature = ctx.Features.Get<IHttpResponseBodyFeature>();
+                bufferingFeature?.DisableBuffering();
+
+                // Get file info for Content-Length and filename
+                var (size, isDirectory, fileName) = await manager.GetFileInfoAsync(sessionId, path);
+                if (isDirectory)
+                    fileName += ".tar.gz";
+
+                ctx.Response.ContentType = "application/octet-stream";
+                ctx.Response.Headers.ContentDisposition = $"attachment; filename=\"{fileName}\"";
+                if (!isDirectory && size > 0)
+                    ctx.Response.ContentLength = size;
+
+                logger.LogInformation("Starting streaming download: {Path} ({Size} bytes)", path, size);
+
+                // Pass cancellation token so browser cancel/close aborts the SFTP transfer
+                var ct = ctx.RequestAborted;
+                await manager.StreamDownloadAsync(sessionId, path, ctx.Response.Body, cancellationToken: ct);
+
+                logger.LogInformation("Completed streaming download: {Path}", path);
+            }
+            catch (OperationCanceledException)
+            {
+                // Client disconnected — silently abort
+                logger.LogInformation("Download cancelled by client: {Path}", path);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Download failed for {Path}", path);
+                if (!ctx.Response.HasStarted)
+                {
+                    // Clear Content-Length to avoid mismatch with error JSON body
+                    ctx.Response.ContentLength = null;
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.StatusCode = 500;
+                    await ctx.Response.WriteAsJsonAsync(new { Error = ex.Message });
+                }
             }
         });
 

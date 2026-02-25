@@ -77,7 +77,7 @@ Built with .NET 10, Blazor (Interactive Auto), MudBlazor, SSH.NET, and xterm.js.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/gui-ssh.git
+git clone https://github.com/JarodTAerts/gui-ssh.git
 cd gui-ssh
 ```
 

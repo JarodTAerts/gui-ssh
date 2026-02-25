@@ -2,9 +2,21 @@ using GuiSsh;
 using GuiSsh.Client.Services;
 using GuiSsh.Components;
 using GuiSsh.Services;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using MudBlazor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Kestrel: allow large file transfers
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = null; // No upload size limit
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(30);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(5);
+    options.Limits.MinResponseDataRate = new MinDataRate(
+        bytesPerSecond: 100, gracePeriod: TimeSpan.FromSeconds(30)); // Allow slow connections
+});
 
 // Add Blazor with both render modes
 builder.Services.AddRazorComponents()
