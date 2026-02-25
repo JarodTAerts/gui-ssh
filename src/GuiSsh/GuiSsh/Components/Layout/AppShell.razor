@@ -28,7 +28,7 @@
     </MudDrawer>
 
     <MudMainContent Class="pa-0" Style="overflow: hidden;">
-        @if (string.IsNullOrEmpty(_activeSessionId))
+        @if (_activeSessions.Count == 0)
         {
             <div class="d-flex align-center justify-center" style="height: 100%;">
                 <MudStack AlignItems="AlignItems.Center" Spacing="4">
@@ -43,7 +43,12 @@
         }
         else
         {
-            <GuiSsh.Components.Layout.SessionTabs SessionId="@_activeSessionId" />
+            @foreach (var sid in _activeSessions)
+            {
+                <div style="height: 100%; @(sid != _activeSessionId ? "display: none;" : "")">
+                    <GuiSsh.Components.Layout.SessionTabs SessionId="@sid" />
+                </div>
+            }
         }
     </MudMainContent>
 </MudLayout>
@@ -51,6 +56,7 @@
 @code {
     private bool _drawerOpen = true;
     private string? _activeSessionId;
+    private HashSet<string> _activeSessions = new();
     private bool _isDarkMode = true;
     private MudThemeProvider _themeProvider = null!;
 
@@ -123,6 +129,7 @@
 
     private void HandleConnected(string sessionId)
     {
+        _activeSessions.Add(sessionId);
         _activeSessionId = sessionId;
         StateHasChanged();
     }
