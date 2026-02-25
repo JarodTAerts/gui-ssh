@@ -1,0 +1,131 @@
+@inject ISshService SshService
+@inject ISnackbar Snackbar
+
+<div style="display: flex; flex-direction: column; height: 100%; overflow: hidden; background: #0e0e0e;">
+    @if (_loading)
+    {
+        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;">
+            <MudProgressCircular Indeterminate="true" Size="Size.Large" Color="Color.Primary" />
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Loading image...</MudText>
+        </div>
+    }
+    else if (_error != null)
+    {
+        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px;">
+            <MudIcon Icon="@Icons.Material.Filled.BrokenImage" Size="Size.Large"
+                     Style="font-size: 3rem; opacity: 0.5;" Color="Color.Error" />
+            <MudText Typo="Typo.body1" Color="Color.Error">@_error</MudText>
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.Refresh" OnClick="LoadImage">
+                Retry
+            </MudButton>
+        </div>
+    }
+    else if (_dataUri != null)
+    {
+        <div style="flex: 1; display: flex; align-items: center; justify-content: center;
+                    overflow: auto; padding: 8px; min-height: 0;">
+            <img src="@_dataUri" alt="@_fileName"
+                 style="max-width: 100%; max-height: 100%; object-fit: contain;
+                        border-radius: 4px; image-rendering: auto;" />
+        </div>
+    }
+
+    @* Status bar *@
+    <div style="display: flex; align-items: center; padding: 4px 12px; gap: 8px;
+                background: var(--surface-dim); border-top: 1px solid var(--surface-container);
+                flex-shrink: 0; min-height: 28px;">
+        <MudIcon Icon="@Icons.Material.Filled.Image" Size="Size.Small" Color="Color.Secondary" />
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            @_fileName
+        </MudText>
+        @if (_fileSize > 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatSize(_fileSize)</MudText>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = string.Empty;
+    [Parameter] public string FilePath { get; set; } = string.Empty;
+
+    private string? _dataUri;
+    private string _fileName = string.Empty;
+    private string? _error;
+    private long _fileSize;
+    private bool _loading = true;
+
+    private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico", ".tiff", ".tif"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _fileName = FilePath.Split('/').LastOrDefault() ?? FilePath;
+        await LoadImage();
+    }
+
+    private async Task LoadImage()
+    {
+        _loading = true;
+        _error = null;
+        _dataUri = null;
+        StateHasChanged();
+
+        try
+        {
+            var (data, fileName) = await SshService.DownloadFileAsync(SessionId, FilePath);
+
+            if (data == null || data.Length == 0)
+            {
+                _error = "File is empty or could not be read.";
+                _loading = false;
+                return;
+            }
+
+            _fileSize = data.Length;
+            var mimeType = GetMimeType(FilePath);
+            var base64 = Convert.ToBase64String(data);
+            _dataUri = $"data:{mimeType};base64,{base64}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load image: {ex.Message}";
+        }
+
+        _loading = false;
+    }
+
+    public static bool IsImageFile(string path)
+    {
+        var ext = System.IO.Path.GetExtension(path);
+        return !string.IsNullOrEmpty(ext) && SupportedExtensions.Contains(ext);
+    }
+
+    private static string GetMimeType(string path)
+    {
+        var ext = System.IO.Path.GetExtension(path)?.ToLowerInvariant();
+        return ext switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".svg" => "image/svg+xml",
+            ".webp" => "image/webp",
+            ".bmp" => "image/bmp",
+            ".ico" => "image/x-icon",
+            ".tiff" or ".tif" => "image/tiff",
+            _ => "application/octet-stream"
+        };
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
+    }
+}

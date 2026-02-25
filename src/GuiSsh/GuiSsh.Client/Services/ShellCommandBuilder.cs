@@ -11,7 +11,9 @@ public class ShellCommandBuilder
 {
     public string ListDirectory(string path)
     {
-        var escaped = ShellEscape(path);
+        // Append trailing / to ensure symlink directories are listed by contents, not as the link itself
+        var normalized = path.TrimEnd('/') + "/";
+        var escaped = ShellEscape(normalized);
         return $"ls -la --color=never --time-style=long-iso {escaped}";
     }
 

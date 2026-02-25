@@ -82,8 +82,16 @@
                  @oncontextmenu="(e) => OnRightClick(e, entryCopy)"
                  @oncontextmenu:preventDefault="true"
                  @onclick="() => SelectEntry(entryCopy)">
-                <MudIcon Icon="@GetFileIcon(entry)" Size="Size.Large"
-                         Color="@GetFileColor(entry)" />
+                <div style="position: relative; display: inline-block;">
+                    <MudIcon Icon="@GetFileIcon(entry)" Size="Size.Large"
+                             Color="@GetFileColor(entry)" />
+                    @if (entry.Type == FileEntryType.Symlink)
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.Link" Size="Size.Small"
+                                 Style="position: absolute; bottom: -2px; right: -4px; font-size: 14px;"
+                                 Color="Color.Info" />
+                    }
+                </div>
                 <MudText Typo="Typo.caption" Style="word-break: break-all; color: var(--on-surface);
                          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
                          overflow: hidden; margin-top: 4px;">
@@ -245,6 +253,24 @@
         {
             _currentPath = entry.FullPath;
             await LoadDirectory();
+        }
+        else if (entry.Type == FileEntryType.Symlink)
+        {
+            // Resolve symlink using cd + pwd, matching terminal cd behavior
+            var resolveCmd = $"cd {ShellCommandBuilder.ShellEscape(entry.FullPath)} 2>/dev/null && echo DIR && pwd || echo FILE";
+            var result = await SshService.ExecuteAsync(SessionId, resolveCmd);
+            var lines = result.StdOut.Trim().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (result.Success && lines.Length >= 2 && lines[0] == "DIR")
+            {
+                // Symlink points to a directory — navigate to resolved path
+                _currentPath = lines[1].Trim();
+                await LoadDirectory();
+            }
+            else
+            {
+                // Symlink points to a file — open it
+                await OnOpenFile.InvokeAsync(entry.FullPath);
+            }
         }
         else
         {
@@ -587,7 +613,7 @@
     private string GetFileIcon(FileEntry entry) => entry.Type switch
     {
         FileEntryType.Directory => Icons.Material.Filled.Folder,
-        FileEntryType.Symlink => Icons.Material.Filled.Link,
+        FileEntryType.Symlink => GuessSymlinkIcon(entry),
         _ => entry.Extension switch
         {
             "txt" or "md" or "log" => Icons.Material.Filled.Description,
@@ -601,10 +627,32 @@
         }
     };
 
+    /// <summary>Guess icon for symlink based on name/extension heuristics.
+    /// Symlinks without an extension are likely directories; with a file extension, show file icon.</summary>
+    private static string GuessSymlinkIcon(FileEntry entry)
+    {
+        // If name has no file extension, assume directory symlink
+        if (!entry.Name.Contains('.') || entry.Name.StartsWith('.'))
+            return Icons.Material.Filled.Folder;
+
+        // Has a file extension — use file icon based on extension
+        var ext = entry.Name.Contains('.') ? entry.Name[(entry.Name.LastIndexOf('.') + 1)..].ToLowerInvariant() : "";
+        return ext switch
+        {
+            "txt" or "md" or "log" => Icons.Material.Filled.Description,
+            "png" or "jpg" or "jpeg" or "gif" or "svg" or "webp" => Icons.Material.Filled.Image,
+            "json" or "xml" or "yaml" or "yml" => Icons.Material.Filled.DataObject,
+            _ => Icons.Material.Filled.InsertDriveFile
+        };
+    }
+
     private Color GetFileColor(FileEntry entry) => entry.Type switch
     {
         FileEntryType.Directory => Color.Warning,
-        FileEntryType.Symlink => Color.Info,
+        FileEntryType.Symlink => GuessSymlinkIsDir(entry) ? Color.Warning : Color.Default,
         _ => Color.Default
     };
+
+    private static bool GuessSymlinkIsDir(FileEntry entry)
+        => !entry.Name.Contains('.') || entry.Name.StartsWith('.');
 }

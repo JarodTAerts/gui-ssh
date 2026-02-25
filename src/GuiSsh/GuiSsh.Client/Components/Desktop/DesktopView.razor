@@ -15,7 +15,7 @@
             {
                 <FileManager SessionId="@SessionId"
                              WindowId="@window.Id"
-                             OnOpenFile="(path) => OpenFileEditor(path)"
+                             OnOpenFile="(path) => OpenFile(path)"
                              OnPathChanged="(path) => OnFileManagerPathChanged(window, path)"
                              OnShowInfo="(entry) => OpenInfoWindow(entry)"
                              OnDownload="(args) => HandleDownload(args.SessionId, args.RemotePath)"
@@ -34,6 +34,11 @@
                 {
                     <InfoPanel SessionId="@SessionId" Entry="@infoEntry" />
                 }
+            }
+            else if (window.Type == WindowType.ImageViewer)
+            {
+                <ImageViewer SessionId="@SessionId"
+                             FilePath="@(window.Data.GetValueOrDefault("FilePath")?.ToString() ?? "")" />
             }
             else if (window.Type == WindowType.TaskManager)
             {
@@ -78,6 +83,33 @@
             Width = 750,
             Height = 500,
             ZIndex = _nextZIndex++
+        };
+        _windows.Add(window);
+    }
+
+    private void OpenFile(string filePath)
+    {
+        if (ImageViewer.IsImageFile(filePath))
+        {
+            OpenImageViewer(filePath);
+            return;
+        }
+        OpenFileEditor(filePath);
+    }
+
+    private void OpenImageViewer(string filePath)
+    {
+        var fileName = filePath.Split('/').LastOrDefault() ?? filePath;
+        var window = new DesktopWindowState
+        {
+            Title = $"Image: {fileName}",
+            Type = WindowType.ImageViewer,
+            X = 90 + _windows.Count * 25,
+            Y = 50 + _windows.Count * 25,
+            Width = 600,
+            Height = 480,
+            ZIndex = _nextZIndex++,
+            Data = new() { ["FilePath"] = filePath }
         };
         _windows.Add(window);
     }
