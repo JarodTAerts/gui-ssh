@@ -16,7 +16,7 @@ public class ClientSshService : ISshService
         _http = http;
     }
 
-    public async Task<string> ConnectAsync(string host, int port, string username, string password)
+    public async Task<ConnectResult> ConnectAsync(string host, int port, string username, string password)
     {
         var response = await _http.PostAsJsonAsync("/api/ssh/connect", new
         {
@@ -28,11 +28,11 @@ public class ClientSshService : ISshService
 
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<ConnectResponse>();
-        return result?.SessionId ?? throw new InvalidOperationException("No session ID returned.");
+        return await response.Content.ReadFromJsonAsync<ConnectResult>()
+            ?? new ConnectResult { Error = "Failed to deserialize connect response." };
     }
 
-    public async Task<string> ConnectWithKeyAsync(string host, int port, string username, string privateKey, string? passphrase = null)
+    public async Task<ConnectResult> ConnectWithKeyAsync(string host, int port, string username, string privateKey, string? passphrase = null)
     {
         var response = await _http.PostAsJsonAsync("/api/ssh/connect", new
         {
@@ -46,8 +46,31 @@ public class ClientSshService : ISshService
 
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<ConnectResponse>();
-        return result?.SessionId ?? throw new InvalidOperationException("No session ID returned.");
+        return await response.Content.ReadFromJsonAsync<ConnectResult>()
+            ?? new ConnectResult { Error = "Failed to deserialize connect response." };
+    }
+
+    public async Task<ConnectResult> TrustHostKeyAndConnectAsync(
+        string host, int port, string username, string password,
+        string fingerprint, string algorithm,
+        string? privateKey = null, string? passphrase = null)
+    {
+        var response = await _http.PostAsJsonAsync("/api/ssh/connect/trust", new
+        {
+            Host = host,
+            Port = port,
+            Username = username,
+            Password = password,
+            Fingerprint = fingerprint,
+            Algorithm = algorithm,
+            PrivateKey = privateKey,
+            Passphrase = passphrase
+        });
+
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadFromJsonAsync<ConnectResult>()
+            ?? new ConnectResult { Error = "Failed to deserialize connect response." };
     }
 
     public async Task DisconnectAsync(string sessionId)
@@ -87,7 +110,6 @@ public class ClientSshService : ISshService
         }
     }
 
-    private record ConnectResponse(string SessionId);
     private record StatusResponse(bool Connected);
 
     public async Task<(byte[] Data, string FileName)> DownloadFileAsync(string sessionId, string remotePath)
@@ -115,7 +137,10 @@ public class ClientSshService : ISshService
         content.Add(new StringContent(remotePath), "remotePath");
         content.Add(new StreamContent(fileStream), "file", fileName);
 
-        var response = await _http.PostAsync("/api/ssh/upload", content);
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/ssh/upload") { Content = content };
+        request.Headers.Add("X-Requested-With", "GuiSsh");  // CSRF protection
+
+        var response = await _http.SendAsync(request);
         response.EnsureSuccessStatusCode();
     }
 }

@@ -199,23 +199,84 @@ else
 
         try
         {
-            string sessionId;
+            Models.ConnectResult result;
             if (!string.IsNullOrEmpty(privateKey))
             {
-                sessionId = await SshService.ConnectWithKeyAsync(conn.Host, conn.Port, conn.Username, privateKey, passphrase);
+                result = await SshService.ConnectWithKeyAsync(conn.Host, conn.Port, conn.Username, privateKey, passphrase);
             }
             else
             {
-                sessionId = await SshService.ConnectAsync(conn.Host, conn.Port, conn.Username, password ?? string.Empty);
+                result = await SshService.ConnectAsync(conn.Host, conn.Port, conn.Username, password ?? string.Empty);
             }
 
-            _activeConnSessionMap[conn.Id] = sessionId;
+            // Handle host key verification results
+            if (result.HostKeyChanged)
+            {
+                // Host key CHANGED — show scary warning, do not connect
+                var parameters = new DialogParameters<HostKeyApprovalDialog>
+                {
+                    { x => x.Host, $"{conn.Host}:{conn.Port}" },
+                    { x => x.Fingerprint, result.HostKeyFingerprint ?? "unknown" },
+                    { x => x.Algorithm, result.HostKeyAlgorithm ?? "unknown" },
+                    { x => x.HostKeyChanged, true }
+                };
+                await DialogService.ShowAsync<HostKeyApprovalDialog>("Host Key Changed", parameters,
+                    new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+                return;
+            }
+
+            if (result.NeedsHostKeyApproval)
+            {
+                // Unknown host key — TOFU prompt
+                var parameters = new DialogParameters<HostKeyApprovalDialog>
+                {
+                    { x => x.Host, $"{conn.Host}:{conn.Port}" },
+                    { x => x.Fingerprint, result.HostKeyFingerprint ?? "unknown" },
+                    { x => x.Algorithm, result.HostKeyAlgorithm ?? "unknown" },
+                    { x => x.HostKeyChanged, false }
+                };
+                var dialog = await DialogService.ShowAsync<HostKeyApprovalDialog>("Unknown Host Key", parameters,
+                    new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+                var dialogResult = await dialog.Result;
+
+                if (dialogResult is null || dialogResult.Canceled)
+                {
+                    Snackbar.Add("Connection cancelled — host key not trusted.", Severity.Info);
+                    return;
+                }
+
+                // User approved — trust the key and reconnect
+                result = await SshService.TrustHostKeyAndConnectAsync(
+                    conn.Host, conn.Port, conn.Username, password ?? string.Empty,
+                    result.HostKeyFingerprint!, result.HostKeyAlgorithm!,
+                    privateKey, passphrase);
+
+                if (!result.IsConnected)
+                {
+                    Snackbar.Add($"Connection failed: {result.Error ?? "Unknown error"}", Severity.Error);
+                    return;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(result.Error))
+            {
+                Snackbar.Add($"Connection failed: {result.Error}", Severity.Error);
+                return;
+            }
+
+            if (!result.IsConnected)
+            {
+                Snackbar.Add("Connection failed: no session returned.", Severity.Error);
+                return;
+            }
+
+            _activeConnSessionMap[conn.Id] = result.SessionId!;
 
             conn.LastConnected = DateTime.UtcNow;
             await Store.UpdateAsync(conn);
 
             Snackbar.Add($"Connected to {conn.Host}", Severity.Success);
-            await OnConnected.InvokeAsync(sessionId);
+            await OnConnected.InvokeAsync(result.SessionId);
         }
         catch (Exception ex)
         {

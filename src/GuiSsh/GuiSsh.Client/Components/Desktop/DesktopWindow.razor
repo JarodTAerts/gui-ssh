@@ -130,7 +130,11 @@
     public async ValueTask DisposeAsync()
     {
         _dotNetRef?.Dispose();
-        if (_dragModule != null)
-            await _dragModule.DisposeAsync();
+        try
+        {
+            if (_dragModule != null)
+                await _dragModule.DisposeAsync();
+        }
+        catch (Microsoft.JSInterop.JSDisconnectedException) { }
     }
 }

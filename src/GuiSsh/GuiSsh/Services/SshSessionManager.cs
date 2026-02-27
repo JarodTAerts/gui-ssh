@@ -11,37 +11,112 @@ public class SshSessionManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, ActiveSession> _sessions = new();
     private readonly SshConnectionFactory _factory;
+    private readonly HostKeyStore _hostKeyStore;
     private readonly ILogger<SshSessionManager> _logger;
 
-    public SshSessionManager(SshConnectionFactory factory, ILogger<SshSessionManager> logger)
+    public SshSessionManager(SshConnectionFactory factory, HostKeyStore hostKeyStore, ILogger<SshSessionManager> logger)
     {
         _factory = factory;
+        _hostKeyStore = hostKeyStore;
         _logger = logger;
     }
 
-    public async Task<string> ConnectAsync(string host, int port, string username, string password)
+    /// <summary>
+    /// Connects with password authentication and host key verification.
+    /// Returns a ConnectResult that may require host key approval before use.
+    /// </summary>
+    public async Task<Client.Models.ConnectResult> ConnectAsync(string host, int port, string username, string password, string ownerId)
     {
-        var client = _factory.CreateClient(host, port, username, password);
-        return await ConnectClientAsync(client, host, port);
+        var verification = _factory.CreateClientWithHostKeyCheck(host, port, username, password, _hostKeyStore);
+        return await ConnectWithVerificationAsync(verification, host, port, ownerId);
     }
 
-    public async Task<string> ConnectWithKeyAsync(string host, int port, string username, string privateKey, string? passphrase = null)
+    /// <summary>
+    /// Connects with private key authentication and host key verification.
+    /// </summary>
+    public async Task<Client.Models.ConnectResult> ConnectWithKeyAsync(string host, int port, string username, string privateKey, string? passphrase, string ownerId)
     {
-        var client = _factory.CreateClientWithKey(host, port, username, privateKey, passphrase);
-        return await ConnectClientAsync(client, host, port);
+        var verification = _factory.CreateClientWithKeyAndHostKeyCheck(host, port, username, privateKey, passphrase, _hostKeyStore);
+        return await ConnectWithVerificationAsync(verification, host, port, ownerId);
     }
 
-    private async Task<string> ConnectClientAsync(SshClient client, string host, int port)
+    /// <summary>
+    /// Second step: after user approves an unknown host key, trust it and reconnect.
+    /// </summary>
+    public async Task TrustAndReconnectAsync(string host, int port, string fingerprint, string algorithm)
+    {
+        await _hostKeyStore.TrustAsync(host, port, fingerprint, algorithm);
+    }
+
+    private async Task<Client.Models.ConnectResult> ConnectWithVerificationAsync(
+        SshConnectionFactory.HostKeyVerificationResult verification,
+        string host, int port, string ownerId)
+    {
+        var client = verification.Client;
+
+        try
+        {
+            await Task.Run(() => client.Connect());
+        }
+        catch (Renci.SshNet.Common.SshConnectionException) when (verification.Status == HostKeyStatus.Changed)
+        {
+            // Host key mismatch — reject
+            client.Dispose();
+            _logger.LogWarning("Host key CHANGED for {Host}:{Port} — connection rejected (possible MITM)",
+                host, port);
+            return new Client.Models.ConnectResult
+            {
+                HostKeyChanged = true,
+                HostKeyFingerprint = verification.Fingerprint,
+                HostKeyAlgorithm = verification.Algorithm
+            };
+        }
+
+        // After Connect(), the HostKeyReceived event has fired and populated verification.Status.
+        if (verification.Status == HostKeyStatus.Unknown)
+        {
+            // Unknown host key — disconnect, return fingerprint for user approval
+            try { client.Disconnect(); } catch { }
+            client.Dispose();
+
+            _logger.LogInformation("Unknown host key for {Host}:{Port} ({Algorithm}: {Fingerprint}) — awaiting user approval",
+                host, port, verification.Algorithm, verification.Fingerprint);
+
+            return new Client.Models.ConnectResult
+            {
+                NeedsHostKeyApproval = true,
+                HostKeyFingerprint = verification.Fingerprint,
+                HostKeyAlgorithm = verification.Algorithm
+            };
+        }
+
+        if (verification.Status == HostKeyStatus.Changed)
+        {
+            // Host key changed — reject (shouldn't reach here since CanTrust=false triggers exception)
+            try { client.Disconnect(); } catch { }
+            client.Dispose();
+
+            return new Client.Models.ConnectResult
+            {
+                HostKeyChanged = true,
+                HostKeyFingerprint = verification.Fingerprint,
+                HostKeyAlgorithm = verification.Algorithm
+            };
+        }
+
+        // Trusted — proceed normally
+        return await FinalizeSessionAsync(client, host, port, ownerId);
+    }
+
+    private async Task<Client.Models.ConnectResult> FinalizeSessionAsync(SshClient client, string host, int port, string ownerId)
     {
         var sessionId = Guid.NewGuid().ToString();
-
-        await Task.Run(() => client.Connect());
-
         var shellStream = _factory.CreateShellStream(client);
 
         var session = new ActiveSession
         {
             SessionId = sessionId,
+            OwnerId = ownerId,
             SshClient = client,
             ShellStream = shellStream,
             LastActivity = DateTime.UtcNow
@@ -55,8 +130,29 @@ public class SshSessionManager : IDisposable
             throw new InvalidOperationException("Failed to register session.");
         }
 
-        _logger.LogInformation("SSH session {SessionId} connected to {Host}:{Port}", sessionId, host, port);
-        return sessionId;
+        _logger.LogInformation("SSH session {SessionId} connected to {Host}:{Port} for user {OwnerId}",
+            sessionId, host, port, ownerId);
+
+        return new Client.Models.ConnectResult { SessionId = sessionId };
+    }
+
+    /// <summary>
+    /// Returns the session only if the caller is the owner. Returns null otherwise.
+    /// </summary>
+    public ActiveSession? GetSessionForOwner(string sessionId, string ownerId)
+    {
+        var session = GetSession(sessionId);
+        if (session == null)
+            return null;
+
+        if (session.OwnerId != ownerId)
+        {
+            _logger.LogWarning("Session {SessionId} access denied for user {UserId} (owner: {OwnerId})",
+                sessionId, ownerId, session.OwnerId);
+            return null;
+        }
+
+        return session;
     }
 
     public ActiveSession? GetSession(string sessionId)
@@ -413,6 +509,7 @@ public class SshSessionManager : IDisposable
 public class ActiveSession
 {
     public required string SessionId { get; set; }
+    public required string OwnerId { get; set; }
     public required SshClient SshClient { get; set; }
     public required ShellStream ShellStream { get; set; }
     public DateTime LastActivity { get; set; } = DateTime.UtcNow;

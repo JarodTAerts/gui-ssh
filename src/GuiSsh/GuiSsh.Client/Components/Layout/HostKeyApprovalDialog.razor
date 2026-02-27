@@ -1,0 +1,62 @@
+@* Dialog shown when an SSH server's host key is unknown (TOFU) *@
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        @if (HostKeyChanged)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-4" Dense="true">
+                <strong>WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!</strong><br />
+                The host key for <strong>@Host</strong> has changed from the previously trusted value.
+                This could indicate a man-in-the-middle attack. The connection has been refused.
+            </MudAlert>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                If you are certain this change is legitimate (e.g. the server was reinstalled),
+                you can remove the old key and try connecting again.
+            </MudText>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-4" Dense="true">
+                The authenticity of host '<strong>@Host</strong>' can't be established.
+            </MudAlert>
+        }
+
+        <MudStack Spacing="2" Class="mb-4">
+            <MudField Label="Host key algorithm" Variant="Variant.Text">@Algorithm</MudField>
+            <MudField Label="Fingerprint" Variant="Variant.Text" Style="font-family: monospace;">@Fingerprint</MudField>
+        </MudStack>
+
+        @if (!HostKeyChanged)
+        {
+            <MudText Typo="Typo.body2">
+                Are you sure you want to trust this host key and continue connecting?
+            </MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        @if (HostKeyChanged)
+        {
+            <MudButton OnClick="Cancel" Color="Color.Default">Close</MudButton>
+        }
+        else
+        {
+            <MudButton OnClick="Cancel" Color="Color.Default">Cancel</MudButton>
+            <MudButton OnClick="Accept" Color="Color.Primary" Variant="Variant.Filled">
+                Yes, trust this host
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public string Host { get; set; } = string.Empty;
+    [Parameter] public string Fingerprint { get; set; } = string.Empty;
+    [Parameter] public string Algorithm { get; set; } = string.Empty;
+    [Parameter] public bool HostKeyChanged { get; set; }
+
+    private void Accept() => MudDialog.Close(DialogResult.Ok(true));
+    private void Cancel() => MudDialog.Cancel();
+}

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using GuiSsh.Services;
 using Microsoft.AspNetCore.Http.Features;
 
@@ -5,54 +6,149 @@ namespace GuiSsh;
 
 /// <summary>
 /// Registers SSH API endpoints used by WASM components (ClientSshService).
+/// All endpoints require authentication and verify session ownership.
 /// </summary>
 public static class SshApiEndpoints
 {
+    /// <summary>
+    /// Extracts the authenticated user's ID from the Easy Auth claims.
+    /// Returns null if the user is not authenticated.
+    /// </summary>
+    private static string? GetUserId(HttpContext ctx)
+        => ctx.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
     public static void MapSshApi(this WebApplication app)
     {
-        var group = app.MapGroup("/api/ssh");
+        var group = app.MapGroup("/api/ssh")
+            .RequireAuthorization();
 
-        group.MapPost("/connect", async (ConnectRequest req, SshSessionManager manager) =>
+        group.MapPost("/connect", async (ConnectRequest req, SshSessionManager manager,
+            ConnectionPolicy policy, HttpContext ctx, ILogger<SshSessionManager> logger) =>
         {
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            var (allowed, reason) = await policy.EvaluateAsync(req.Host, req.Port);
+            if (!allowed)
+                return Results.Ok(new Client.Models.ConnectResult { Error = reason });
+
             try
             {
-                string sessionId;
+                Client.Models.ConnectResult result;
                 if (!string.IsNullOrEmpty(req.PrivateKey))
                 {
-                    sessionId = await manager.ConnectWithKeyAsync(req.Host, req.Port, req.Username, req.PrivateKey, req.Passphrase);
+                    result = await manager.ConnectWithKeyAsync(req.Host, req.Port, req.Username,
+                        req.PrivateKey, req.Passphrase, userId);
                 }
                 else
                 {
-                    sessionId = await manager.ConnectAsync(req.Host, req.Port, req.Username, req.Password);
+                    result = await manager.ConnectAsync(req.Host, req.Port, req.Username,
+                        req.Password, userId);
                 }
-                return Results.Ok(new { SessionId = sessionId });
+                return Results.Ok(result);
             }
             catch (Exception ex)
             {
-                return Results.BadRequest(new { Error = ex.Message });
+                logger.LogError(ex, "Connection failed for {Host}:{Port} by user {UserId}",
+                    req.Host, req.Port, userId);
+                return Results.Ok(new Client.Models.ConnectResult
+                {
+                    Error = "Connection failed. Check host and credentials."
+                });
             }
-        });
+        }).RequireRateLimiting("connect");
 
-        group.MapPost("/exec", async (ExecRequest req, SshSessionManager manager) =>
+        group.MapPost("/connect/trust", async (TrustHostKeyRequest req, SshSessionManager manager,
+            ConnectionPolicy policy, HttpContext ctx, ILogger<SshSessionManager> logger) =>
         {
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            var (allowed, reason) = await policy.EvaluateAsync(req.Host, req.Port);
+            if (!allowed)
+                return Results.Ok(new Client.Models.ConnectResult { Error = reason });
+
+            try
+            {
+                // Trust the host key, then reconnect
+                await manager.TrustAndReconnectAsync(req.Host, req.Port, req.Fingerprint, req.Algorithm);
+
+                Client.Models.ConnectResult result;
+                if (!string.IsNullOrEmpty(req.PrivateKey))
+                {
+                    result = await manager.ConnectWithKeyAsync(req.Host, req.Port, req.Username,
+                        req.PrivateKey, req.Passphrase, userId);
+                }
+                else
+                {
+                    result = await manager.ConnectAsync(req.Host, req.Port, req.Username,
+                        req.Password, userId);
+                }
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Trust-and-reconnect failed for {Host}:{Port} by user {UserId}",
+                    req.Host, req.Port, userId);
+                return Results.Ok(new Client.Models.ConnectResult
+                {
+                    Error = "Connection failed after trusting host key."
+                });
+            }
+        }).RequireRateLimiting("connect");
+
+        group.MapPost("/exec", async (ExecRequest req, SshSessionManager manager, HttpContext ctx) =>
+        {
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            var session = manager.GetSessionForOwner(req.SessionId, userId);
+            if (session == null)
+                return Results.NotFound(new { Error = "Session not found." });
+
             var result = await manager.ExecuteAsync(req.SessionId, req.Command);
             return Results.Ok(result);
         });
 
-        group.MapPost("/disconnect", async (DisconnectRequest req, SshSessionManager manager) =>
+        group.MapPost("/disconnect", async (DisconnectRequest req, SshSessionManager manager, HttpContext ctx) =>
         {
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            var session = manager.GetSessionForOwner(req.SessionId, userId);
+            if (session == null)
+                return Results.NotFound(new { Error = "Session not found." });
+
             await manager.DisconnectAsync(req.SessionId);
             return Results.Ok();
         });
 
-        group.MapGet("/status/{sessionId}", (string sessionId, SshSessionManager manager) =>
+        group.MapGet("/status/{sessionId}", (string sessionId, SshSessionManager manager, HttpContext ctx) =>
         {
-            var connected = manager.IsConnected(sessionId);
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            var session = manager.GetSessionForOwner(sessionId, userId);
+            var connected = session?.IsConnected ?? false;
             return Results.Ok(new { Connected = connected });
         });
 
-        group.MapPost("/download", async (DownloadRequest req, SshSessionManager manager) =>
+        group.MapPost("/download", async (DownloadRequest req, SshSessionManager manager, HttpContext ctx,
+            ILogger<SshSessionManager> logger) =>
         {
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            var session = manager.GetSessionForOwner(req.SessionId, userId);
+            if (session == null)
+                return Results.NotFound(new { Error = "Session not found." });
+
             try
             {
                 var (data, fileName) = await manager.DownloadFileAsync(req.SessionId, req.RemotePath);
@@ -60,13 +156,29 @@ public static class SshApiEndpoints
             }
             catch (Exception ex)
             {
-                return Results.BadRequest(new { Error = ex.Message });
+                logger.LogError(ex, "Download failed for {Path} on session {SessionId}", req.RemotePath, req.SessionId);
+                return Results.BadRequest(new { Error = "Download failed." });
             }
         });
 
         // Streaming download — browser-native download with Content-Length for progress
-        group.MapGet("/download/{sessionId}", async (string sessionId, string path, HttpContext ctx, SshSessionManager manager, ILogger<SshSessionManager> logger) =>
+        group.MapGet("/download/{sessionId}", async (string sessionId, string path, HttpContext ctx,
+            SshSessionManager manager, ILogger<SshSessionManager> logger) =>
         {
+            var userId = GetUserId(ctx);
+            if (string.IsNullOrEmpty(userId))
+            {
+                ctx.Response.StatusCode = 401;
+                return;
+            }
+
+            var session = manager.GetSessionForOwner(sessionId, userId);
+            if (session == null)
+            {
+                ctx.Response.StatusCode = 404;
+                return;
+            }
+
             try
             {
                 // SSH.NET's DownloadFile uses synchronous Stream.Write — allow it for this endpoint
@@ -98,7 +210,6 @@ public static class SshApiEndpoints
             }
             catch (OperationCanceledException)
             {
-                // Client disconnected — silently abort
                 logger.LogInformation("Download cancelled by client: {Path}", path);
             }
             catch (Exception ex)
@@ -106,17 +217,25 @@ public static class SshApiEndpoints
                 logger.LogError(ex, "Download failed for {Path}", path);
                 if (!ctx.Response.HasStarted)
                 {
-                    // Clear Content-Length to avoid mismatch with error JSON body
                     ctx.Response.ContentLength = null;
                     ctx.Response.ContentType = "application/json";
                     ctx.Response.StatusCode = 500;
-                    await ctx.Response.WriteAsJsonAsync(new { Error = ex.Message });
+                    await ctx.Response.WriteAsJsonAsync(new { Error = "Download failed." });
                 }
             }
         });
 
-        group.MapPost("/upload", async (HttpRequest httpRequest, SshSessionManager manager) =>
+        group.MapPost("/upload", async (HttpRequest httpRequest, SshSessionManager manager,
+            ILogger<SshSessionManager> logger) =>
         {
+            var userId = GetUserId(httpRequest.HttpContext);
+            if (string.IsNullOrEmpty(userId))
+                return Results.Unauthorized();
+
+            // Require custom header as CSRF protection (browsers won't add this cross-origin)
+            if (!httpRequest.Headers.ContainsKey("X-Requested-With"))
+                return Results.StatusCode(403);
+
             try
             {
                 var sessionId = httpRequest.Form["sessionId"].ToString();
@@ -126,19 +245,25 @@ public static class SshApiEndpoints
                 if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(remotePath) || file == null)
                     return Results.BadRequest(new { Error = "Missing sessionId, remotePath, or file." });
 
+                var session = manager.GetSessionForOwner(sessionId, userId);
+                if (session == null)
+                    return Results.NotFound(new { Error = "Session not found." });
+
                 using var stream = file.OpenReadStream();
                 await manager.UploadFileAsync(sessionId, remotePath, stream);
                 return Results.Ok(new { Success = true, FileName = file.FileName });
             }
             catch (Exception ex)
             {
-                return Results.BadRequest(new { Error = ex.Message });
+                logger.LogError(ex, "Upload failed");
+                return Results.BadRequest(new { Error = "Upload failed." });
             }
-        }).DisableAntiforgery();
+        }).DisableAntiforgery(); // Multipart uploads require this; X-Requested-With header mitigates CSRF
     }
 }
 
 public record ConnectRequest(string Host, int Port, string Username, string Password, string? PrivateKey = null, string? Passphrase = null);
+public record TrustHostKeyRequest(string Host, int Port, string Username, string Password, string Fingerprint, string Algorithm, string? PrivateKey = null, string? Passphrase = null);
 public record ExecRequest(string SessionId, string Command);
 public record DisconnectRequest(string SessionId);
 public record DownloadRequest(string SessionId, string RemotePath);

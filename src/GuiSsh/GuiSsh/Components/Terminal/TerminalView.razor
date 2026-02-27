@@ -112,14 +112,18 @@
             _readCts.Dispose();
         }
 
-        if (_terminal != null)
+        try
         {
-            try { await _terminal.InvokeVoidAsync("dispose"); } catch { }
-            await _terminal.DisposeAsync();
-        }
+            if (_terminal != null)
+            {
+                try { await _terminal.InvokeVoidAsync("dispose"); } catch { }
+                await _terminal.DisposeAsync();
+            }
 
-        if (_jsModule != null)
-            await _jsModule.DisposeAsync();
+            if (_jsModule != null)
+                await _jsModule.DisposeAsync();
+        }
+        catch (Microsoft.JSInterop.JSDisconnectedException) { }
 
         _dotNetRef?.Dispose();
     }
